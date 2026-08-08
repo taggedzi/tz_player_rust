@@ -1,0 +1,21 @@
+[package]
+name = "tz-tui"
+description = "Terminal UI (ratatui) frontend for tz-player"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tz-core.workspace = true
+tz-control.workspace = true
+tz-db.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
+lofty.workspace = true
+image.workspace = true

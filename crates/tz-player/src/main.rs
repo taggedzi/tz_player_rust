@@ -1,0 +1,347 @@
+//! tz-player binary — CLI entrypoints for the Rust rewrite.
+
+use std::path::PathBuf;
+use std::process::ExitCode;
+
+use clap::{Parser, Subcommand, ValueEnum};
+use tracing_subscriber::EnvFilter;
+
+use tz_analysis::ffmpeg_available;
+use tz_core::{app_paths_or_cwd, load_state, open_runtime, save_state, AppState};
+use tz_db::{open_database, SCHEMA_VERSION};
+use tz_playback::{discover_vlc, BackendKind};
+
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[derive(Debug, Clone, ValueEnum)]
+enum BackendCli {
+    Vlc,
+    Fake,
+}
+
+impl From<BackendCli> for BackendKind {
+    fn from(value: BackendCli) -> Self {
+        match value {
+            BackendCli::Vlc => BackendKind::Vlc,
+            BackendCli::Fake => BackendKind::Fake,
+        }
+    }
+}
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "tz-player",
+    version,
+    about = "TaggedZ's terminal music player (Rust rewrite)",
+    long_about = "Local-first TUI music player.\n\
+                  Playback: VLC/libVLC (required for real audio; loads libvlc dynamically).\n\
+                  Analysis/visualizers: FFmpeg (optional).\n\
+                  See `tz-player doctor` for environment checks."
+)]
+struct Cli {
+    /// Playback backend (default: vlc; falls back to fake if VLC cannot start)
+    #[arg(long, value_enum, default_value_t = BackendCli::Vlc)]
+    backend: BackendCli,
+
+    /// Enable verbose (debug) logging
+    #[arg(long)]
+    verbose: bool,
+
+    /// Only show warnings and errors
+    #[arg(long)]
+    quiet: bool,
+
+    /// Write logs to an explicit file path
+    #[arg(long)]
+    log_file: Option<PathBuf>,
+
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Debug, Subcommand)]
+enum Commands {
+    /// Run environment diagnostics (VLC required for real audio, FFmpeg optional)
+    Doctor,
+    /// Guided setup notes for VLC and FFmpeg
+    Setup,
+    /// Print resolved paths and schema version
+    Paths,
+    /// Add files or folders to the default playlist
+    Add {
+        /// Media files or directories
+        paths: Vec<PathBuf>,
+    },
+    /// List tracks in the default playlist
+    List {
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
+}
+
+#[tokio::main]
+async fn main() -> ExitCode {
+    let cli = Cli::parse();
+    init_logging(&cli);
+
+    match cli.command {
+        Some(Commands::Doctor) => cmd_doctor(cli.backend.into()),
+        Some(Commands::Setup) => {
+            cmd_setup();
+            ExitCode::SUCCESS
+        }
+        Some(Commands::Paths) => {
+            cmd_paths();
+            ExitCode::SUCCESS
+        }
+        Some(Commands::Add { paths }) => match cmd_add(cli.backend.into(), paths).await {
+            Ok(n) => {
+                println!("Added {n} track(s).");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                ExitCode::FAILURE
+            }
+        },
+        Some(Commands::List { limit }) => match cmd_list(limit).await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("{e}");
+                ExitCode::FAILURE
+            }
+        },
+        None => match run_app(cli.backend.into()).await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("{e}");
+                ExitCode::FAILURE
+            }
+        },
+    }
+}
+
+async fn run_app(backend: BackendKind) -> Result<(), String> {
+    let paths = app_paths_or_cwd();
+    let runtime = open_runtime(paths, Some(backend))
+        .await
+        .map_err(|e| e.to_string())?;
+    tz_tui::run_tui(runtime).await.map_err(|e| e.to_string())
+}
+
+async fn cmd_add(backend: BackendKind, paths: Vec<PathBuf>) -> Result<usize, String> {
+    if paths.is_empty() {
+        return Err("usage: tz-player add <file-or-dir>...".into());
+    }
+    let app_paths = app_paths_or_cwd();
+    let mut runtime = open_runtime(app_paths, Some(backend))
+        .await
+        .map_err(|e| e.to_string())?;
+    let n = runtime.add_paths_cli(&paths).map_err(|e| e.to_string())?;
+    runtime.persist().await;
+    Ok(n)
+}
+
+async fn cmd_list(limit: usize) -> Result<(), String> {
+    let paths = app_paths_or_cwd();
+    let store = tz_db::PlaylistStore::new(&paths.db_file);
+    store.initialize().map_err(|e| e.to_string())?;
+    let pid = store
+        .ensure_playlist("Default")
+        .map_err(|e| e.to_string())?;
+    let rows = store
+        .fetch_window(pid, 0, limit)
+        .map_err(|e| e.to_string())?;
+    if rows.is_empty() {
+        println!("(empty playlist — try: tz-player add <files>)");
+        return Ok(());
+    }
+    for (i, row) in rows.iter().enumerate() {
+        let title = row
+            .title
+            .clone()
+            .unwrap_or_else(|| row.path.display().to_string());
+        let artist = row.artist.as_deref().unwrap_or("-");
+        println!("{:>4}. {} — {}", i + 1, artist, title);
+    }
+    Ok(())
+}
+
+fn init_logging(cli: &Cli) {
+    let level = if cli.quiet {
+        "warn"
+    } else if cli.verbose {
+        "debug"
+    } else {
+        "info"
+    };
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .try_init();
+}
+
+fn cmd_doctor(backend: BackendKind) -> ExitCode {
+    println!("tz-player doctor  v{VERSION}");
+    println!("==========================");
+    println!();
+    println!("Media roles:");
+    println!("  Playback (listen path): VLC / libVLC");
+    println!("  Analysis / visualizers: FFmpeg (optional) + native WAV");
+    println!();
+
+    let mut ok = true;
+    let mut warns = 0u32;
+    let discovery = discover_vlc();
+
+    if let Some(exe) = &discovery.vlc_executable {
+        println!("[OK]   VLC executable: {}", exe.display());
+    } else {
+        println!("[WARN] VLC executable not found on PATH / common install paths");
+        warns += 1;
+    }
+    if let Some(dir) = &discovery.libvlc_dir {
+        println!("[OK]   libVLC directory: {}", dir.display());
+        println!("[OK]   libVLC dynamic load path ready (runtime FFI)");
+    } else {
+        println!("[WARN] libVLC not found in common install paths");
+        warns += 1;
+        if matches!(backend, BackendKind::Vlc) {
+            ok = false;
+        }
+    }
+    for note in &discovery.notes {
+        println!("       note: {note}");
+    }
+
+    match backend {
+        BackendKind::Vlc => println!("[INFO] Selected backend: vlc"),
+        BackendKind::Fake => {
+            println!("[INFO] Selected backend: fake (no real audio; VLC optional)")
+        }
+    }
+
+    if ffmpeg_available() {
+        println!("[OK]   FFmpeg available (analysis / visualizers)");
+    } else {
+        println!("[WARN] FFmpeg not found — analysis-backed visualizers degrade");
+        println!("       Playback via VLC still works; native WAV analysis only without FFmpeg");
+        warns += 1;
+    }
+
+    let paths = app_paths_or_cwd();
+    println!();
+    println!("Paths:");
+    println!("  data_dir:   {}", paths.data_dir.display());
+    println!("  config_dir: {}", paths.config_dir.display());
+    println!("  log_dir:    {}", paths.log_dir.display());
+    println!("  state:      {}", paths.state_file.display());
+    println!("  database:   {}", paths.db_file.display());
+
+    match open_database(&paths.db_file) {
+        Ok(_) => println!("[OK]   Database writable (schema v{SCHEMA_VERSION})"),
+        Err(e) => {
+            println!("[FAIL] Database: {e}");
+            ok = false;
+        }
+    }
+
+    match std::fs::create_dir_all(&paths.log_dir) {
+        Ok(()) => println!("[OK]   Log directory writable"),
+        Err(e) => {
+            println!("[FAIL] Log directory: {e}");
+            ok = false;
+        }
+    }
+
+    if paths.state_file.exists() {
+        println!("[OK]   State file present");
+    } else {
+        println!("[INFO] State file will be created on first quit");
+    }
+
+    println!();
+    println!("Build tip:");
+    println!("  cargo build --release -p tz-player");
+    println!("  # binary: target/release/tz-player{}", exe_suffix());
+    println!();
+
+    if ok {
+        if warns > 0 {
+            println!("Doctor result: PASS with {warns} warning(s)");
+        } else {
+            println!("Doctor result: PASS (required checks for selected backend)");
+        }
+        ExitCode::SUCCESS
+    } else {
+        println!("Doctor result: FAIL — run `tz-player setup` or use --backend fake");
+        ExitCode::from(1)
+    }
+}
+
+fn exe_suffix() -> &'static str {
+    if cfg!(windows) {
+        ".exe"
+    } else {
+        ""
+    }
+}
+
+fn cmd_setup() {
+    println!("tz-player setup  v{VERSION}");
+    println!("=========================");
+    println!();
+    println!("1) Playback — install VLC (required for real audio)");
+    println!("   https://www.videolan.org/vlc/");
+    if cfg!(windows) {
+        println!("   Windows: winget install VideoLAN.VLC");
+    } else if cfg!(target_os = "macos") {
+        println!("   macOS:   brew install --cask vlc");
+    } else {
+        println!("   Linux:   install VLC via your package manager (libvlc + plugins)");
+    }
+    println!();
+    println!("2) Analysis — install FFmpeg (optional, for visualizers)");
+    if cfg!(windows) {
+        println!("   Windows: winget install Gyan.FFmpeg");
+    } else if cfg!(target_os = "macos") {
+        println!("   macOS:   brew install ffmpeg");
+    } else {
+        println!("   Linux:   install ffmpeg via your package manager");
+    }
+    println!();
+    println!("3) Build a release binary");
+    println!("   cargo build --release -p tz-player");
+    println!("   # output: target/release/tz-player{}", exe_suffix());
+    println!();
+    println!("4) Verify:  tz-player doctor --backend vlc");
+    println!("5) Add music: tz-player add path/to/song.mp3");
+    println!("6) Run: tz-player   (or tz-player --backend fake for no-audio tests)");
+    println!();
+    println!("Data lives under a separate identity from the Python app:");
+    let paths = app_paths_or_cwd();
+    println!("  {}", paths.data_dir.display());
+    println!();
+    println!("Note: FFmpeg is never used for the listen path in v1.");
+    println!("      VLC plays audio; FFmpeg feeds offline analysis only.");
+    println!();
+    println!("See also: docs/RELEASE.md");
+}
+
+fn cmd_paths() {
+    let paths = app_paths_or_cwd();
+    println!("tz-player paths  v{VERSION}");
+    println!("data_dir:   {}", paths.data_dir.display());
+    println!("config_dir: {}", paths.config_dir.display());
+    println!("log_dir:    {}", paths.log_dir.display());
+    println!("state:      {}", paths.state_file.display());
+    println!("database:   {}", paths.db_file.display());
+    println!("schema:     v{SCHEMA_VERSION}");
+    // ensure state file can be created
+    if !paths.state_file.exists() {
+        let _ = save_state(&paths.state_file, &AppState::default());
+    } else {
+        let _ = load_state(&paths.state_file);
+    }
+}

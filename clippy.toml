@@ -1,0 +1,2 @@
+# Keep clippy defaults; tighten over time as the codebase grows.
+msrv = "1.80"

@@ -1,0 +1,16 @@
+[package]
+name = "tz-playback"
+description = "Playback backends for tz-player (VLC listen path + fake)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
+libloading = { workspace = true }

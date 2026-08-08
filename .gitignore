@@ -1,0 +1,28 @@
+# Rust
+/target/
+**/*.rs.bk
+# Cargo.lock is committed for the binary application workspace
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Local / reference (keep Python reference out of VCS if desired)
+.local/
+*.log
+
+# Build artifacts
+*.pdb
+*.exe
+!tools/**/*.exe
+
+# AI tools
+.claude/
+.codex/
+
+# Reference workspace
+_ref_tz_player/

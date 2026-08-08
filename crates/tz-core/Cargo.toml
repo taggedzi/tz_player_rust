@@ -1,0 +1,24 @@
+[package]
+name = "tz-core"
+description = "Core library, player state, and domain services for tz-player"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tz-playback.workspace = true
+tz-db.workspace = true
+tz-control.workspace = true
+tz-analysis.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+directories.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
+async-trait.workspace = true
+lofty.workspace = true
+rand.workspace = true

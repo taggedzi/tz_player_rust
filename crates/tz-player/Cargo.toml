@@ -1,0 +1,26 @@
+[package]
+name = "tz-player"
+description = "TaggedZ's terminal music player (Rust rewrite)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "tz-player"
+path = "src/main.rs"
+
+[dependencies]
+tz-core.workspace = true
+tz-playback.workspace = true
+tz-analysis.workspace = true
+tz-control.workspace = true
+tz-db.workspace = true
+tz-tui.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
