@@ -632,48 +632,55 @@ async fn handle_key(
         return Ok(false);
     }
 
-    // Text input modes
-    if runtime.input_mode == "find" || runtime.input_mode == "add_path" {
+    // Folder-browser modal
+    if runtime.input_mode == "browse" {
         match code {
             KeyCode::Esc => {
-                if runtime.input_mode == "find" {
-                    let _ = runtime.handle(Command::ClearFind).await;
-                }
+                let _ = runtime.handle(Command::BrowseCancel).await;
+            }
+            KeyCode::Up => {
+                let _ = runtime.handle(Command::BrowseUp).await;
+            }
+            KeyCode::Down => {
+                let _ = runtime.handle(Command::BrowseDown).await;
+            }
+            KeyCode::Enter => {
+                let _ = runtime.handle(Command::BrowseEnter).await;
+            }
+            KeyCode::Char('a') | KeyCode::Char(' ') => {
+                let _ = runtime.handle(Command::BrowseSelect).await;
+            }
+            KeyCode::Backspace | KeyCode::Left => {
+                let _ = runtime.handle(Command::BrowseParent).await;
+            }
+            _ => {}
+        }
+        return Ok(false);
+    }
+
+    // Text input mode (find)
+    if runtime.input_mode == "find" {
+        match code {
+            KeyCode::Esc => {
+                let _ = runtime.handle(Command::ClearFind).await;
                 runtime.input_mode = "normal".into();
                 runtime.input_buffer.clear();
                 runtime.set_status("Cancelled");
             }
             KeyCode::Enter => {
-                if runtime.input_mode == "find" {
-                    let q = runtime.input_buffer.clone();
-                    let _ = runtime.handle(Command::SetFindQuery { query: q }).await;
-                    runtime.input_mode = "normal".into();
-                } else if runtime.input_mode == "add_path" {
-                    let path = runtime.input_buffer.trim().to_string();
-                    if path.is_empty() {
-                        runtime.set_status("Empty path — cancelled");
-                    } else {
-                        let _ = runtime
-                            .handle(Command::AddPaths { paths: vec![path] })
-                            .await;
-                    }
-                    runtime.input_mode = "normal".into();
-                    runtime.input_buffer.clear();
-                }
+                let q = runtime.input_buffer.clone();
+                let _ = runtime.handle(Command::SetFindQuery { query: q }).await;
+                runtime.input_mode = "normal".into();
             }
             KeyCode::Backspace => {
                 runtime.input_buffer.pop();
-                if runtime.input_mode == "find" {
-                    let q = runtime.input_buffer.clone();
-                    let _ = runtime.handle(Command::SetFindQuery { query: q }).await;
-                }
+                let q = runtime.input_buffer.clone();
+                let _ = runtime.handle(Command::SetFindQuery { query: q }).await;
             }
             KeyCode::Char(c) => {
                 runtime.input_buffer.push(c);
-                if runtime.input_mode == "find" {
-                    let q = runtime.input_buffer.clone();
-                    let _ = runtime.handle(Command::SetFindQuery { query: q }).await;
-                }
+                let q = runtime.input_buffer.clone();
+                let _ = runtime.handle(Command::SetFindQuery { query: q }).await;
             }
             _ => {}
         }
@@ -696,7 +703,7 @@ async fn handle_key(
             runtime.set_status("Find mode");
         }
         KeyCode::Char('a') => {
-            let _ = runtime.handle(Command::RequestAddPath).await;
+            let _ = runtime.handle(Command::RequestAddFolder).await;
         }
         // Shift+Z toggles pane visibility; must sit above the plain 'z'
         // cycle arm. Terminals vary on whether a shifted letter arrives as
@@ -1126,6 +1133,40 @@ mod tests {
         assert!(!runtime.visualizer_hidden);
 
         let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
+    }
+
+    #[tokio::test]
+    async fn pressing_a_opens_the_browser_instead_of_the_old_text_prompt() {
+        let mut runtime = bare_test_runtime("browse_open_key").await;
+        let mut viz = VisualizerHost::new(false);
+
+        handle_key(&mut runtime, &mut viz, KeyCode::Char('a'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+
+        assert_eq!(runtime.input_mode, "browse");
+
+        let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
+    }
+
+    #[tokio::test]
+    async fn esc_cancels_the_browser_without_adding_anything() {
+        let mut runtime = bare_test_runtime("browse_keys_cancel").await;
+        let dir = runtime.paths.data_dir.clone();
+        std::fs::write(dir.join("track.mp3"), b"").unwrap();
+        let mut viz = VisualizerHost::new(false);
+
+        handle_key(&mut runtime, &mut viz, KeyCode::Char('a'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        handle_key(&mut runtime, &mut viz, KeyCode::Esc, KeyModifiers::NONE)
+            .await
+            .unwrap();
+
+        assert_eq!(runtime.input_mode, "normal");
+        assert_eq!(runtime.playlist_count(), 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
