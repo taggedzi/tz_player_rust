@@ -640,20 +640,27 @@ fn expand_media_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for p in paths {
         if p.is_dir() {
-            if let Ok(rd) = std::fs::read_dir(p) {
-                for ent in rd.flatten() {
-                    let path = ent.path();
-                    if path.is_file() && is_media_extension(&path) {
-                        out.push(path);
-                    }
-                }
-            }
+            collect_media_files_recursive(p, &mut out);
         } else {
             out.push(p.clone());
         }
     }
     out.sort();
     out
+}
+
+fn collect_media_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for ent in rd.flatten() {
+        let path = ent.path();
+        if path.is_dir() {
+            collect_media_files_recursive(&path, out);
+        } else if path.is_file() && is_media_extension(&path) {
+            out.push(path);
+        }
+    }
 }
 
 fn is_media_extension(path: &Path) -> bool {
@@ -675,6 +682,17 @@ fn is_media_extension(path: &Path) -> bool {
             | "aif"
             | "ape"
             | "wv"
+            | "mp4"
+            | "m4b"
+            | "mka"
+            | "ac3"
+            | "dts"
+            | "mpc"
+            | "tta"
+            | "spx"
+            | "caf"
+            | "mid"
+            | "midi"
     )
 }
 
@@ -688,4 +706,54 @@ pub enum RuntimeError {
     Playback(String),
     #[error("{0}")]
     Message(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "tz_runtime_{name}_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn expand_media_paths_recurses_into_subfolders() {
+        let dir = temp_dir("recurse");
+        std::fs::write(dir.join("top.mp3"), b"").unwrap();
+        let sub = dir.join("album");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("nested.flac"), b"").unwrap();
+        let sub2 = sub.join("disc2");
+        std::fs::create_dir_all(&sub2).unwrap();
+        std::fs::write(sub2.join("deep.wav"), b"").unwrap();
+
+        let found = expand_media_paths(std::slice::from_ref(&dir));
+
+        assert!(found.contains(&dir.join("top.mp3")));
+        assert!(found.contains(&sub.join("nested.flac")));
+        assert!(found.contains(&sub2.join("deep.wav")));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn recognizes_additional_vlc_supported_extensions() {
+        for ext in [
+            "mp4", "m4b", "mka", "ac3", "dts", "mpc", "tta", "spx", "caf", "mid", "midi",
+        ] {
+            let path = Path::new("track").with_extension(ext);
+            assert!(
+                is_media_extension(&path),
+                "expected {ext} to be recognized as a media extension"
+            );
+        }
+    }
 }

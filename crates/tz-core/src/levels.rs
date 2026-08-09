@@ -2,15 +2,42 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use tz_analysis::{
     analyze_beats_from_decoded, analyze_spectrum_from_decoded, analyze_track_envelope_default,
     analyze_waveform_proxy_from_decoded, decode_track_for_analysis,
 };
 use tz_db::{
-    BeatParams, BeatStore, EnvelopeStore, SpectrumParams, SpectrumStore, WaveformParams,
-    WaveformStore,
+    AnalysisCachePruner, BeatParams, BeatStore, EnvelopeStore, SpectrumParams, SpectrumStore,
+    WaveformParams, WaveformStore,
 };
+
+/// Retention limits for the shared analysis cache. Defaults match the Python
+/// reference (`ANALYSIS_CACHE_*` constants in app.py).
+#[derive(Debug, Clone, Copy)]
+pub struct CacheLimits {
+    pub max_bytes: i64,
+    pub max_age_days: i64,
+    pub min_recent_tracks_protected: i64,
+    pub prune_trigger_threshold: f64,
+    /// Minimum time between threshold checks. `ensure_analysis` runs once per
+    /// track on a folder-add, so this keeps a bulk add from doing one
+    /// `SUM(byte_size)` scan (and possibly a full prune scan) per track.
+    pub check_interval: Duration,
+}
+
+impl Default for CacheLimits {
+    fn default() -> Self {
+        Self {
+            max_bytes: 2 * 1024 * 1024 * 1024,
+            max_age_days: 180,
+            min_recent_tracks_protected: 200,
+            prune_trigger_threshold: 0.90,
+            check_interval: Duration::from_secs(30),
+        }
+    }
+}
 
 /// Source of the current level sample.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,17 +91,25 @@ pub struct LevelService {
     spectrum: SpectrumStore,
     beat: BeatStore,
     waveform: WaveformStore,
+    pruner: AnalysisCachePruner,
+    cache_limits: CacheLimits,
+    last_prune_check: Mutex<Option<Instant>>,
     active_path: Mutex<Option<PathBuf>>,
     analyzing: Mutex<Option<PathBuf>>,
 }
 
 impl LevelService {
     pub fn new(db_path: impl Into<PathBuf>) -> Self {
+        Self::with_cache_limits(db_path, CacheLimits::default())
+    }
+
+    pub fn with_cache_limits(db_path: impl Into<PathBuf>, cache_limits: CacheLimits) -> Self {
         let db_path = db_path.into();
         let envelope = EnvelopeStore::new(db_path.clone(), 50);
         let spectrum = SpectrumStore::new(db_path.clone(), SpectrumParams::default());
         let beat = BeatStore::new(db_path.clone(), BeatParams::default());
-        let waveform = WaveformStore::new(db_path, WaveformParams::default());
+        let waveform = WaveformStore::new(db_path.clone(), WaveformParams::default());
+        let pruner = AnalysisCachePruner::new(db_path);
         let _ = envelope.initialize();
         let _ = spectrum.initialize();
         let _ = beat.initialize();
@@ -84,9 +119,45 @@ impl LevelService {
             spectrum,
             beat,
             waveform,
+            pruner,
+            cache_limits,
+            last_prune_check: Mutex::new(None),
             active_path: Mutex::new(None),
             analyzing: Mutex::new(None),
         }
+    }
+
+    /// Evicts old/oversized analysis cache entries once the cache is at or
+    /// above its trigger threshold. Cheap no-op when under threshold, and
+    /// throttled to at most once per `cache_limits.check_interval` so a
+    /// bulk folder-add (one `ensure_analysis` call per track) doesn't do a
+    /// full cache scan per track.
+    fn maybe_prune_cache(&self) {
+        {
+            let mut last = self.last_prune_check.lock().unwrap();
+            let now = Instant::now();
+            if let Some(prev) = *last {
+                if now.duration_since(prev) < self.cache_limits.check_interval {
+                    return;
+                }
+            }
+            *last = Some(now);
+        }
+        let over_threshold = self
+            .pruner
+            .exceeds_threshold(
+                self.cache_limits.max_bytes,
+                self.cache_limits.prune_trigger_threshold,
+            )
+            .unwrap_or(false);
+        if !over_threshold {
+            return;
+        }
+        let _ = self.pruner.prune(
+            self.cache_limits.max_bytes,
+            self.cache_limits.max_age_days,
+            self.cache_limits.min_recent_tracks_protected,
+        );
     }
 
     pub fn ensure_analysis(&self, path: &Path) -> Result<(), String> {
@@ -158,6 +229,7 @@ impl LevelService {
                     .map_err(|e| e.to_string())?;
             }
         }
+        self.maybe_prune_cache();
         Ok(())
     }
 
@@ -309,5 +381,98 @@ impl LevelService {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_db_path(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("tz_player3_levels_{name}_{nanos}.db"))
+    }
+
+    // byte_size for an envelope entry is points.len() * 24 (see EnvelopeStore::upsert_envelope).
+    fn seed_envelope_entry(db_path: &Path) {
+        let seed = EnvelopeStore::new(db_path, 50);
+        seed.initialize().unwrap();
+        let points: Vec<(u64, f32, f32)> = (0..10).map(|i| (i as u64 * 50, 0.1, 0.1)).collect();
+        seed.upsert_envelope(Path::new("/tmp/seed-track.mp3"), 500, &points)
+            .unwrap();
+    }
+
+    #[test]
+    fn maybe_prune_cache_evicts_when_over_threshold() {
+        let path = temp_db_path("prune_wiring");
+        let service = LevelService::with_cache_limits(
+            &path,
+            CacheLimits {
+                max_bytes: 100,
+                max_age_days: 180,
+                min_recent_tracks_protected: 0,
+                prune_trigger_threshold: 0.0,
+                check_interval: Duration::ZERO,
+            },
+        );
+        seed_envelope_entry(&path);
+
+        service.maybe_prune_cache();
+
+        assert_eq!(service.pruner.total_cache_bytes().unwrap(), 0);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn maybe_prune_cache_is_noop_under_threshold() {
+        let path = temp_db_path("prune_wiring_noop");
+        let service = LevelService::with_cache_limits(
+            &path,
+            CacheLimits {
+                max_bytes: 10_000,
+                max_age_days: 180,
+                min_recent_tracks_protected: 200,
+                prune_trigger_threshold: 0.90,
+                check_interval: Duration::ZERO,
+            },
+        );
+        seed_envelope_entry(&path);
+
+        service.maybe_prune_cache();
+
+        assert_eq!(service.pruner.total_cache_bytes().unwrap(), 240);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn maybe_prune_cache_throttles_repeated_checks() {
+        let path = temp_db_path("prune_wiring_throttle");
+        let service = LevelService::with_cache_limits(
+            &path,
+            CacheLimits {
+                max_bytes: 100,
+                max_age_days: 180,
+                min_recent_tracks_protected: 0,
+                prune_trigger_threshold: 0.0,
+                check_interval: Duration::from_secs(60),
+            },
+        );
+
+        // First call always checks (no prior check recorded) and evicts.
+        seed_envelope_entry(&path);
+        service.maybe_prune_cache();
+        assert_eq!(service.pruner.total_cache_bytes().unwrap(), 0);
+
+        // Second call happens well within check_interval, so it must be
+        // skipped even though the cache is over budget again.
+        seed_envelope_entry(&path);
+        service.maybe_prune_cache();
+        assert_eq!(service.pruner.total_cache_bytes().unwrap(), 240);
+
+        let _ = std::fs::remove_file(&path);
     }
 }

@@ -6,9 +6,12 @@ item has been removed — verified already implemented in
 `crates/tz-tui/src/lib.rs` (bound to ±30s).
 
 ## Tier 0 — Correctness fixes (small, isolated, do first)
-- analysis-cache pruning - Python evicts old/oversized entries from the analysis cache by age + byte budget; Rust's schema has the exact columns/indexes for it (byte_size, last_accessed_at) but no code ever prunes. The cache DB will grow unbounded.
-- Folder-add isn't recursive — Rust's add only does a single-level read_dir; Python recursively scans. Adding a music folder in Rust silently skips every album subfolder.
-- Add missing music files that are supported by vlc in the open, playback, and selection areas.
+
+All three done.
+
+- [x] analysis-cache pruning — ported as `tz_db::AnalysisCachePruner` (age + byte-budget eviction, same SQL shape as the Python reference) and wired into `LevelService::maybe_prune_cache`, called from `ensure_analysis_inner` after any cache write. Limits live in `CacheLimits` (`crates/tz-core/src/levels.rs`), currently hardcoded to the Python defaults (2 GiB cap / 180 day max age / 200 recent entries protected / 0.90 trigger threshold) and not yet user-configurable — feeds Tier 4's "read from a config" item. Also throttled to at most once per `check_interval` (default 30s) so a big recursive folder-add (one `ensure_analysis` call per track) doesn't do a full cache scan per track.
+- [x] Folder-add isn't recursive — `expand_media_paths` in `crates/tz-core/src/runtime.rs` now recurses into subdirectories via `collect_media_files_recursive`.
+- [x] Add missing music files that are supported by vlc — `is_media_extension` extended with mp4, m4b, mka, ac3, dts, mpc, tta, spx, caf, mid, midi.
 
 ## Tier 1 — Missing core functionality
 - Project needs an "about" information output. CLI, TUI, and any other eventual user exposed interface need to display the product information, github page (does not exist yet), version and any useful debug info without exposing sensitive information about a user.

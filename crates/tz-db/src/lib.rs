@@ -3,6 +3,7 @@
 //! Schema targets Python tz-player `SCHEMA_VERSION = 7` semantic compatibility.
 
 mod beat_store;
+mod cache_pruner;
 mod envelope_store;
 mod error;
 mod models;
@@ -13,6 +14,7 @@ mod spectrum_store;
 mod waveform_store;
 
 pub use beat_store::{BeatParams, BeatReading, BeatStore};
+pub use cache_pruner::{AnalysisCachePruneResult, AnalysisCachePruner};
 pub use envelope_store::EnvelopeStore;
 pub use error::DbError;
 pub use models::{MoveDirection, PlaylistRow, TrackMeta, TrackMetaSnapshot, TrackRecord};
