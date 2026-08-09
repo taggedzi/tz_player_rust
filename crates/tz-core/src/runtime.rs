@@ -1222,7 +1222,10 @@ mod tests {
         assert_eq!(runtime.browse_dir, Some(sub.clone()));
         assert_eq!(runtime.last_browse_dir, Some(sub.clone()));
         assert!(runtime.browse_entries.iter().any(|e| e.name == "song.mp3"));
-        assert_eq!(runtime.input_mode, "browse", "descending should not close the modal");
+        assert_eq!(
+            runtime.input_mode, "browse",
+            "descending should not close the modal"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
