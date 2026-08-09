@@ -19,3 +19,6 @@ crossterm.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
 lofty.workspace = true
 image.workspace = true
+
+[dev-dependencies]
+tz-playback.workspace = true

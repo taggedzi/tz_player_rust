@@ -33,11 +33,13 @@ cargo run -p tz-player -- doctor
 
 | Key | Action |
 |-----|--------|
-| `f` | Find (FTS filter) |
+| `f` | Find (FTS filter, live as you type) |
 | `a` | Add path (type file/folder, Enter) |
 | `c` then `y`/`n` | Clear playlist confirm |
 | `z` | Cycle visualizers |
-| `?` | Help strip |
+| `g` | Locate now-playing track |
+| `i` | About / version info |
+| `?` | Help (full-screen key reference) |
 | `q` | Quit |
 
 Envelope / spectrum / beat / waveform-proxy caches fill on play/add. Transport shows `analysis:ESBW` when caches are warm.

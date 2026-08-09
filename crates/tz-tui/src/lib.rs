@@ -407,7 +407,7 @@ fn draw_footer(
     let help = if confirm_clear {
         "Clear playlist? [y]es / [n]o".to_string()
     } else if input_mode == "find" {
-        format!("Find: {input_buffer}_   (Enter=apply Esc=cancel)")
+        format!("Find: {input_buffer}_   (live — Enter=keep Esc=cancel)")
     } else if input_mode == "add_path" {
         format!("Add path: {input_buffer}_   (Enter=add Esc=cancel)")
     } else if input_mode == "help" {
@@ -636,9 +636,17 @@ async fn handle_key(
             }
             KeyCode::Backspace => {
                 runtime.input_buffer.pop();
+                if runtime.input_mode == "find" {
+                    let q = runtime.input_buffer.clone();
+                    let _ = runtime.handle(Command::SetFindQuery { query: q }).await;
+                }
             }
             KeyCode::Char(c) => {
                 runtime.input_buffer.push(c);
+                if runtime.input_mode == "find" {
+                    let q = runtime.input_buffer.clone();
+                    let _ = runtime.handle(Command::SetFindQuery { query: q }).await;
+                }
             }
             _ => {}
         }
@@ -939,5 +947,95 @@ mod tests {
         assert!(active.add_modifier.contains(Modifier::BOLD));
         assert_eq!(inactive.fg, Some(Color::DarkGray));
         assert_ne!(active.fg, inactive.fg);
+    }
+
+    async fn find_test_runtime(name: &str) -> AppRuntime {
+        let dir = std::env::temp_dir().join(format!(
+            "tz_tui_find_{name}_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Distinct filename substrings, no metadata upsert needed — mirrors
+        // tz-db's search_by_path_and_metadata fixture, which is what proves
+        // add_tracks alone populates the search index (FTS-or-LIKE) that
+        // search_item_ids reads from.
+        for name in ["alpha_song.mp3", "beta_song.mp3", "alphabet.mp3"] {
+            std::fs::write(dir.join(name), b"").unwrap();
+        }
+        let paths = tz_core::AppPaths {
+            data_dir: dir.clone(),
+            config_dir: dir.clone(),
+            log_dir: dir.join("logs"),
+            state_file: dir.join("state.json"),
+            db_file: dir.join("db.sqlite3"),
+        };
+        let runtime = tz_core::open_runtime(paths, Some(tz_playback::BackendKind::Fake))
+            .await
+            .unwrap();
+        let dir_paths: Vec<PathBuf> = ["alpha_song.mp3", "beta_song.mp3", "alphabet.mp3"]
+            .iter()
+            .map(|n| dir.join(n))
+            .collect();
+        runtime
+            .store
+            .add_tracks(runtime.playlist_id, &dir_paths)
+            .unwrap();
+        runtime
+    }
+
+    #[tokio::test]
+    async fn typing_in_find_mode_filters_the_playlist_before_enter_is_pressed() {
+        let mut runtime = find_test_runtime("live").await;
+        let mut viz = VisualizerHost::new(false);
+        assert_eq!(runtime.playlist_count(), 3);
+
+        handle_key(&mut runtime, &mut viz, KeyCode::Char('f'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        for c in "alpha".chars() {
+            handle_key(&mut runtime, &mut viz, KeyCode::Char(c), KeyModifiers::NONE)
+                .await
+                .unwrap();
+        }
+
+        // Live filtering means this is already true — Enter hasn't been
+        // pressed yet. Assert through the same read path draw_playlist
+        // uses, not the internal find_ids field.
+        assert_eq!(
+            runtime.playlist_count(),
+            2,
+            "expected 'alpha' to match alpha_song and alphabet without pressing Enter"
+        );
+        let visible = runtime.fetch_rows(0, 10).unwrap();
+        assert!(visible
+            .iter()
+            .all(|r| r.path.to_string_lossy().contains("alpha")));
+
+        handle_key(&mut runtime, &mut viz, KeyCode::Backspace, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        handle_key(&mut runtime, &mut viz, KeyCode::Backspace, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        handle_key(&mut runtime, &mut viz, KeyCode::Backspace, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        handle_key(&mut runtime, &mut viz, KeyCode::Backspace, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        handle_key(&mut runtime, &mut viz, KeyCode::Backspace, KeyModifiers::NONE)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            runtime.playlist_count(),
+            3,
+            "expected backspacing back to an empty query to restore the full playlist"
+        );
+
+        let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
     }
 }

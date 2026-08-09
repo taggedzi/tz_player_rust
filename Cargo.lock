@@ -1394,6 +1394,7 @@ dependencies = [
  "tz-control",
  "tz-core",
  "tz-db",
+ "tz-playback",
 ]
 
 [[package]]

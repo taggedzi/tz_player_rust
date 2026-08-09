@@ -56,13 +56,15 @@ cargo build --release -p tz-player
 | - / + | Volume |
 | [ / ] | Speed (`\` = 1.0x) |
 | r / s | Repeat cycle / shuffle |
-| f | Find (FTS) |
+| f | Find (FTS, filters live as you type) |
 | a | Add path |
 | d | Delete cursor item |
 | c | Clear playlist |
 | m | Refresh metadata |
 | z | Cycle visualizers (26 built-ins) |
-| ? | Help |
+| g | Locate now-playing track |
+| i | About / version info |
+| ? | Help (full-screen key reference) |
 | q | Quit |
 
 Full reference: [`docs/usage.md`](docs/usage.md).
