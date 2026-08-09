@@ -14,7 +14,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use ratatui::Terminal;
 use tz_control::Command;
 use tz_core::{AppRuntime, EditorFocus, EditorOverlay};
@@ -67,8 +67,8 @@ async fn ui_loop(
         let count = runtime.playlist_count();
         let term_size = terminal.size().map_err(|e| TuiError::Io(e.to_string()))?;
         let area = Rect::new(0, 0, term_size.width, term_size.height);
-        // header(3) + transport(4) + footer(2) + borders; main fills the rest
-        let main_height = area.height.saturating_sub(9).max(3);
+        // header(3) + transport(5) + footer(2); main fills the rest
+        let main_height = area.height.saturating_sub(10).max(3);
         let visible = main_height.saturating_sub(2) as usize; // list border
 
         if runtime.cursor_index < scroll_offset {
@@ -91,7 +91,7 @@ async fn ui_loop(
             .constraints([
                 Constraint::Length(3),
                 Constraint::Min(5),
-                Constraint::Length(4),
+                Constraint::Length(5),
                 Constraint::Length(2),
             ])
             .split(area);
@@ -150,7 +150,7 @@ async fn ui_loop(
                     .constraints([
                         Constraint::Length(3), // header
                         Constraint::Min(5),    // main: playlist | visualizer
-                        Constraint::Length(4), // transport
+                        Constraint::Length(5), // three-row transport + borders
                         Constraint::Length(2), // footer
                     ])
                     .split(f.area());
@@ -387,50 +387,167 @@ fn state_style(active: bool) -> Style {
 }
 
 fn draw_transport(f: &mut ratatui::Frame<'_>, area: Rect, snap: &tz_control::TransportSnapshot) {
-    let pos = format_time(snap.position_ms);
-    let dur = format_time(snap.duration_ms);
-    let bar_w = (area.width.saturating_sub(48) as usize).clamp(12, 40);
-    let bar = progress_bar(snap.position_ms, snap.duration_ms, bar_w);
-    let lvl = match (snap.level_left, snap.level_right, &snap.level_source) {
-        (Some(l), Some(r), Some(s)) => format!(" L{l:.2} R{r:.2}[{s}]"),
-        _ => String::new(),
-    };
-    let analysis = snap
-        .analysis_status
-        .as_deref()
-        .map(|a| format!("  analysis:{a}"))
-        .unwrap_or_default();
-    let prefix = format!(
-        " {}  {} {} {}  vol {}%  speed {:.2}x  ",
-        snap.status.to_uppercase(),
-        pos,
-        bar,
-        dur,
-        snap.volume,
-        snap.speed,
-    );
-    let suffix = format!("{lvl}{analysis} ");
-    let shuffle_label = if snap.shuffle { "on" } else { "off" };
-    let mut lines = vec![Line::from(vec![
-        Span::raw(prefix),
-        Span::styled(
-            format!("rep {}", snap.repeat_mode),
-            state_style(snap.repeat_mode != "off"),
-        ),
-        Span::raw("  "),
-        Span::styled(format!("shuf {shuffle_label}"), state_style(snap.shuffle)),
-        Span::raw(suffix),
-    ])];
-    if let Some(err) = &snap.error {
-        lines.push(Line::from(Span::styled(
-            err.chars().take(120).collect::<String>(),
-            Style::default().fg(Color::Red),
-        )));
+    let block = Block::default().borders(Borders::ALL).title(" Transport ");
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
     }
-    let p = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title(" Transport "))
-        .wrap(Wrap { trim: true });
-    f.render_widget(p, area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    let position = format_time(snap.position_ms);
+    let duration = format_time(snap.duration_ms);
+    let time_value = format!("{position}/{duration}");
+    let time_ratio = if snap.duration_ms > 0 {
+        snap.position_ms as f64 / snap.duration_ms as f64
+    } else {
+        0.0
+    };
+    f.render_widget(
+        Paragraph::new(slider_line(
+            "TIME",
+            time_value,
+            time_ratio,
+            rows[0].width,
+            Color::Cyan,
+        )),
+        rows[0],
+    );
+
+    // Keep these as independent rectangles: future mouse handling can map
+    // clicks directly to volume and speed without reworking transport layout.
+    let controls = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(rows[1]);
+    let volume_area = Rect {
+        width: controls[0].width.saturating_sub(1),
+        ..controls[0]
+    };
+    f.render_widget(
+        Paragraph::new(slider_line(
+            "VOL",
+            format!("{}%", snap.volume),
+            f64::from(snap.volume) / 100.0,
+            volume_area.width,
+            Color::Green,
+        )),
+        volume_area,
+    );
+    let speed_ratio = ((snap.speed - 0.5) / (4.0 - 0.5)).clamp(0.0, 1.0);
+    f.render_widget(
+        Paragraph::new(slider_line(
+            "SPD",
+            format!("{:.2}x", snap.speed),
+            speed_ratio,
+            controls[1].width,
+            Color::Cyan,
+        )),
+        controls[1],
+    );
+
+    f.render_widget(
+        Paragraph::new(transport_status_line(snap, rows[2].width)),
+        rows[2],
+    );
+}
+
+fn slider_line(
+    label: &'static str,
+    value: String,
+    ratio: f64,
+    width: u16,
+    active_color: Color,
+) -> Line<'static> {
+    let fixed_width = label.chars().count() + value.chars().count() + 2;
+    let track_width = (width as usize).saturating_sub(fixed_width);
+    let mut spans = vec![Span::styled(
+        format!("{label} "),
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )];
+    if track_width > 0 {
+        let marker = if track_width == 1 {
+            0
+        } else {
+            (ratio.clamp(0.0, 1.0) * (track_width - 1) as f64).round() as usize
+        };
+        if marker > 0 {
+            spans.push(Span::styled(
+                "━".repeat(marker),
+                Style::default().fg(active_color),
+            ));
+        }
+        spans.push(Span::styled("●", Style::default().fg(Color::White)));
+        if marker + 1 < track_width {
+            spans.push(Span::styled(
+                "─".repeat(track_width - marker - 1),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+    }
+    spans.push(Span::styled(
+        format!(" {value}"),
+        Style::default().fg(Color::Gray),
+    ));
+    Line::from(spans)
+}
+
+fn transport_status_line(snap: &tz_control::TransportSnapshot, width: u16) -> Line<'static> {
+    let shuffle = if snap.shuffle { "on" } else { "off" };
+    if width >= 52 {
+        Line::from(vec![
+            Span::styled(
+                "Status: ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(snap.status.clone(), state_style(snap.status == "playing")),
+            Span::raw("  |  "),
+            Span::styled(
+                "Repeat: ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                snap.repeat_mode.clone(),
+                state_style(snap.repeat_mode != "off"),
+            ),
+            Span::raw("  |  "),
+            Span::styled(
+                "Shuffle: ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(shuffle, state_style(snap.shuffle)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(
+                snap.status.to_uppercase(),
+                state_style(snap.status == "playing"),
+            ),
+            Span::raw("  REP:"),
+            Span::styled(
+                snap.repeat_mode.clone(),
+                state_style(snap.repeat_mode != "off"),
+            ),
+            Span::raw("  SHUF:"),
+            Span::styled(shuffle, state_style(snap.shuffle)),
+        ])
+    }
 }
 
 fn draw_footer(
@@ -453,28 +570,30 @@ fn draw_footer(
     } else {
         "↑/↓ Space n/p x ←/→ -/+ [] r/s f a d c m z i g  Z=hide-viz  ?=help  q quit".into()
     };
-    let (line, style) = if input_mode == "help" {
-        (
-            help,
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )
-    } else if let Some(m) = msg {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .split(area);
+    let help_style = if input_mode == "help" {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    f.render_widget(Paragraph::new(help).style(help_style), rows[0]);
+
+    if let Some(message) = msg.filter(|_| status_level != tz_core::StatusLevel::Info) {
         let (prefix, color) = match status_level {
             tz_core::StatusLevel::Error => ("[ERROR] ", Color::Red),
             tz_core::StatusLevel::Warn => ("[WARN] ", Color::Yellow),
-            tz_core::StatusLevel::Info => ("", Color::DarkGray),
+            tz_core::StatusLevel::Info => unreachable!("informational messages are not rendered"),
         };
-        (
-            format!("{help}  |  {prefix}{m}"),
-            Style::default().fg(color),
-        )
-    } else {
-        (help, Style::default().fg(Color::DarkGray))
-    };
-    let p = Paragraph::new(line).style(style);
-    f.render_widget(p, area);
+        f.render_widget(
+            Paragraph::new(format!("{prefix}{message}")).style(Style::default().fg(color)),
+            rows[1],
+        );
+    }
 }
 
 /// Center a fixed-size box within `r`, clamped so it never exceeds `r`.
@@ -833,20 +952,6 @@ fn draw_browse_overlay(
 fn format_time(ms: u64) -> String {
     let total_s = ms / 1000;
     format!("{:02}:{:02}", total_s / 60, total_s % 60)
-}
-
-fn progress_bar(pos: u64, dur: u64, width: usize) -> String {
-    if dur == 0 || width == 0 {
-        return format!("[{}]", " ".repeat(width));
-    }
-    let filled = ((pos as f64 / dur as f64) * width as f64).round() as usize;
-    let filled = filled.min(width);
-    let mut bar = String::from("[");
-    for i in 0..width {
-        bar.push(if i < filled { '#' } else { '-' });
-    }
-    bar.push(']');
-    bar
 }
 
 fn toggle_visualizer_hidden(runtime: &mut AppRuntime) {
@@ -1478,6 +1583,100 @@ mod tests {
         assert!(active.add_modifier.contains(Modifier::BOLD));
         assert_eq!(inactive.fg, Some(Color::DarkGray));
         assert_ne!(active.fg, inactive.fg);
+    }
+
+    fn transport_snapshot_fixture() -> tz_control::TransportSnapshot {
+        tz_control::TransportSnapshot {
+            status: "playing".into(),
+            position_ms: 107_000,
+            duration_ms: 211_000,
+            volume: 45,
+            speed: 1.0,
+            repeat_mode: "off".into(),
+            shuffle: false,
+            level_left: Some(0.09),
+            level_right: Some(0.08),
+            level_source: Some("Envelope".into()),
+            analysis_status: Some("ESBW".into()),
+            ..Default::default()
+        }
+    }
+
+    fn render_transport_buffer(width: u16) -> Buffer {
+        let backend = TestBackend::new(width, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let snapshot = transport_snapshot_fixture();
+        terminal
+            .draw(|frame| draw_transport(frame, frame.area(), &snapshot))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn transport_uses_three_stable_rows_without_analysis_diagnostics() {
+        let buffer = render_transport_buffer(100);
+        let time = row_text(&buffer, 1);
+        let controls = row_text(&buffer, 2);
+        let status = row_text(&buffer, 3);
+        let all = buffer_text(&buffer);
+
+        assert!(time.contains("TIME") && time.contains("01:47/03:31"));
+        assert!(controls.contains("VOL") && controls.contains("SPD"));
+        assert!(status.contains("Status: playing"));
+        assert!(status.contains("Repeat: off"));
+        assert!(status.contains("Shuffle: off"));
+        assert!(!all.contains("Envelope"));
+        assert!(!all.contains("ESBW"));
+        assert!(!all.contains("L0.09"));
+    }
+
+    #[test]
+    fn transport_abbreviates_status_without_wrapping_on_narrow_terminals() {
+        let buffer = render_transport_buffer(36);
+        assert!(row_text(&buffer, 1).contains("TIME"));
+        let controls = row_text(&buffer, 2);
+        assert!(controls.contains("VOL") && controls.contains("SPD"));
+        let status = row_text(&buffer, 3);
+        assert!(status.contains("PLAYING"));
+        assert!(status.contains("REP:off"));
+        assert!(status.contains("SHUF:off"));
+    }
+
+    #[test]
+    fn footer_suppresses_chatter_but_keeps_actionable_warnings() {
+        let backend = TestBackend::new(100, 2);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_footer(
+                    frame,
+                    frame.area(),
+                    Some("Playlist edits cancelled"),
+                    tz_core::StatusLevel::Info,
+                    "normal",
+                    "",
+                    false,
+                )
+            })
+            .unwrap();
+        let info = buffer_text(&terminal.backend().buffer().clone());
+        assert!(!info.contains("Playlist edits cancelled"));
+
+        terminal
+            .draw(|frame| {
+                draw_footer(
+                    frame,
+                    frame.area(),
+                    Some("Metadata refresh failed"),
+                    tz_core::StatusLevel::Warn,
+                    "normal",
+                    "",
+                    false,
+                )
+            })
+            .unwrap();
+        let warning = buffer_text(&terminal.backend().buffer().clone());
+        assert!(warning.contains("[WARN] Metadata refresh failed"));
     }
 
     /// A real `AppRuntime` (Fake backend, temp on-disk DB) with no tracks —

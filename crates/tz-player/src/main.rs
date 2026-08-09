@@ -185,8 +185,9 @@ fn init_logging(cli: &Cli) {
         "info"
     };
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
+    let log_path = resolved_log_path(cli);
 
-    if let Some(path) = cli.log_file.as_deref() {
+    if let Some(path) = log_path.as_deref() {
         if let Some(parent) = path.parent() {
             if let Err(error) = std::fs::create_dir_all(parent) {
                 eprintln!(
@@ -215,6 +216,17 @@ fn init_logging(cli: &Cli) {
         .with_env_filter(filter)
         .with_target(false)
         .try_init();
+}
+
+fn resolved_log_path(cli: &Cli) -> Option<PathBuf> {
+    cli.log_file.clone().or_else(|| {
+        // Never let tracing write into the alternate-screen TUI: even one
+        // stderr line scrolls the physical terminal and desynchronizes it from
+        // Ratatui's back buffer. CLI subcommands keep their normal stderr logs.
+        cli.command
+            .is_none()
+            .then(|| app_paths_or_cwd().log_dir.join("tz-player.log"))
+    })
 }
 
 fn cmd_doctor(backend: BackendKind) -> ExitCode {
@@ -378,5 +390,33 @@ fn cmd_paths() {
         let _ = save_state(&paths.state_file, &AppState::default());
     } else {
         let _ = load_state(&paths.state_file);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interactive_tui_logs_to_a_file_by_default() {
+        let cli = Cli::try_parse_from(["tz-player"]).unwrap();
+        let path = resolved_log_path(&cli).expect("interactive log path");
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("tz-player.log")
+        );
+    }
+
+    #[test]
+    fn cli_subcommands_keep_terminal_logging_unless_file_is_requested() {
+        let doctor = Cli::try_parse_from(["tz-player", "doctor"]).unwrap();
+        assert!(resolved_log_path(&doctor).is_none());
+
+        let explicit =
+            Cli::try_parse_from(["tz-player", "--log-file", "diagnostics.log", "doctor"]).unwrap();
+        assert_eq!(
+            resolved_log_path(&explicit),
+            Some(PathBuf::from("diagnostics.log"))
+        );
     }
 }
