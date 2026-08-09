@@ -145,10 +145,13 @@ async fn ui_loop(
                     f,
                     main[0],
                     &rows,
-                    runtime.cursor_index,
-                    scroll_offset,
-                    count,
-                    &runtime.find_query,
+                    PlaylistView {
+                        cursor_index: runtime.cursor_index,
+                        scroll_offset,
+                        total: count,
+                        find_query: &runtime.find_query,
+                        playing_item_id: snap.item_id,
+                    },
                 );
                 draw_visualizer(f, main[1], &viz_lines, viz.active_name());
                 draw_transport(f, root[2], &snap);
@@ -211,15 +214,29 @@ fn draw_header(
     f.render_widget(p, area);
 }
 
+/// View state for [`draw_playlist`], bundled to stay under clippy's
+/// too-many-arguments limit.
+struct PlaylistView<'a> {
+    cursor_index: usize,
+    scroll_offset: usize,
+    total: usize,
+    find_query: &'a str,
+    playing_item_id: Option<i64>,
+}
+
 fn draw_playlist(
     f: &mut ratatui::Frame<'_>,
     area: Rect,
     rows: &[tz_db::PlaylistRow],
-    cursor_index: usize,
-    scroll_offset: usize,
-    total: usize,
-    find_query: &str,
+    view: PlaylistView<'_>,
 ) {
+    let PlaylistView {
+        cursor_index,
+        scroll_offset,
+        total,
+        find_query,
+        playing_item_id,
+    } = view;
     let items: Vec<ListItem> = if rows.is_empty() {
         let hint = if !find_query.is_empty() {
             "  No matches — Esc clears find"
@@ -247,12 +264,15 @@ fn draw_playlist(
                     })
                     .unwrap_or_else(|| row.path.display().to_string());
                 let artist = row.artist.as_deref().unwrap_or("");
-                let line = if artist.is_empty() {
-                    format!(" {:>4}  {label}", abs + 1)
+                let rest = if artist.is_empty() {
+                    format!("{:>4}  {label}", abs + 1)
                 } else {
-                    format!(" {:>4}  {artist} — {label}", abs + 1)
+                    format!("{:>4}  {artist} — {label}", abs + 1)
                 };
-                let style = if abs == cursor_index {
+                let is_cursor = abs == cursor_index;
+                let is_playing = playing_item_id == Some(row.item_id);
+                let marker = if is_playing { ">" } else { " " };
+                let base_style = if is_cursor {
                     Style::default()
                         .fg(Color::Black)
                         .bg(Color::Cyan)
@@ -260,7 +280,19 @@ fn draw_playlist(
                 } else {
                     Style::default().fg(Color::Gray)
                 };
-                ListItem::new(Line::from(Span::styled(line, style)))
+                let marker_style = if is_cursor {
+                    base_style
+                } else if is_playing {
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    base_style
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!(" {marker} "), marker_style),
+                    Span::styled(rest, base_style),
+                ]))
             })
             .collect()
     };
@@ -351,10 +383,10 @@ fn draw_footer(
     } else if input_mode == "add_path" {
         format!("Add path: {input_buffer}_   (Enter=add Esc=cancel)")
     } else if input_mode == "help" {
-        "HELP: ↑↓ cursor  Space play  n/p next/prev  ←→ seek  -/+ vol  [] speed  f find  a add  z viz  i about  Esc/q close"
+        "HELP: ↑↓ cursor  Space play  n/p next/prev  ←→ seek  -/+ vol  [] speed  f find  a add  z viz  i about  g locate playing  Esc/q close"
             .into()
     } else {
-        "↑/↓ Space n/p x ←/→ -/+ [] r/s f a d c m z i  ?=help  q quit".into()
+        "↑/↓ Space n/p x ←/→ -/+ [] r/s f a d c m z i g  ?=help  q quit".into()
     };
     let (line, style) = if input_mode == "help" {
         (
@@ -499,6 +531,9 @@ async fn handle_key(
         KeyCode::Char('i') => {
             runtime.set_status(tz_core::about_info().tui_line());
         }
+        KeyCode::Char('g') => {
+            let _ = runtime.handle(Command::LocatePlaying).await;
+        }
         KeyCode::Home => {
             runtime.cursor_index = 0;
         }
@@ -614,4 +649,100 @@ pub enum TuiError {
     Io(String),
     #[error("{0}")]
     Message(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use std::path::PathBuf;
+
+    fn row(item_id: i64, title: &str) -> tz_db::PlaylistRow {
+        tz_db::PlaylistRow {
+            item_id,
+            track_id: item_id,
+            pos_key: item_id,
+            path: PathBuf::from(format!("{title}.mp3")),
+            title: Some(title.to_string()),
+            artist: None,
+            album: None,
+            year: None,
+            duration_ms: None,
+            meta_valid: None,
+            meta_error: None,
+        }
+    }
+
+    fn render(
+        rows: &[tz_db::PlaylistRow],
+        cursor_index: usize,
+        playing_item_id: Option<i64>,
+    ) -> Buffer {
+        let backend = TestBackend::new(40, 6);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                draw_playlist(
+                    f,
+                    f.area(),
+                    rows,
+                    PlaylistView {
+                        cursor_index,
+                        scroll_offset: 0,
+                        total: rows.len(),
+                        find_query: "",
+                        playing_item_id,
+                    },
+                );
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn row_text(buf: &Buffer, y: u16) -> String {
+        (0..buf.area.width)
+            .filter_map(|x| buf.cell((x, y)).map(|c| c.symbol().to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn marks_now_playing_row_with_distinct_glyph() {
+        let rows = vec![row(1, "one"), row(2, "two"), row(3, "three")];
+        let buf = render(&rows, 0, Some(2));
+
+        // Border is y=0; list rows start at y=1, one per row in order.
+        assert!(
+            row_text(&buf, 2).contains('>'),
+            "expected a marker on the now-playing row (item_id=2)"
+        );
+        assert!(
+            !row_text(&buf, 1).contains('>'),
+            "did not expect a marker on a non-playing row"
+        );
+    }
+
+    #[test]
+    fn marker_still_visible_when_cursor_is_on_playing_row() {
+        let rows = vec![row(1, "one"), row(2, "two")];
+        let buf = render(&rows, 1, Some(2));
+
+        assert!(
+            row_text(&buf, 2).contains('>'),
+            "expected the marker even when the cursor highlight covers the same row"
+        );
+    }
+
+    #[test]
+    fn no_marker_when_nothing_has_played() {
+        let rows = vec![row(1, "one"), row(2, "two")];
+        let buf = render(&rows, 0, None);
+
+        for y in 1..3 {
+            assert!(
+                !row_text(&buf, y).contains('>'),
+                "did not expect any marker when playing_item_id is None"
+            );
+        }
+    }
 }

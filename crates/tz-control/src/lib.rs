@@ -41,6 +41,8 @@ pub enum Command {
     CursorDown,
     PageUp,
     PageDown,
+    /// Move the cursor to the currently-playing (or last-played) track.
+    LocatePlaying,
     AddPaths {
         paths: Vec<String>,
     },

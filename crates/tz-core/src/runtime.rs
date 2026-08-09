@@ -446,6 +446,7 @@ impl AppRuntime {
                     self.cursor_index = (self.cursor_index + 10).min(n - 1);
                 }
             }
+            Command::LocatePlaying => self.locate_playing().await,
             Command::AddPaths { paths } => {
                 let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
                 self.add_paths_internal(&paths)?;
@@ -643,6 +644,37 @@ impl AppRuntime {
             }
         }
         Ok(())
+    }
+
+    /// Move the cursor to the currently-playing (or last-played) track.
+    ///
+    /// `cursor_index` always indexes whatever list `fetch_rows` is currently
+    /// reading, so when a find filter is active this must resolve within the
+    /// filtered ids, not the full playlist's `pos_key` order. If the playing
+    /// track isn't in the filtered set, the find is cleared so the jump can
+    /// still land somewhere meaningful.
+    async fn locate_playing(&mut self) {
+        let Some(id) = self.player.snapshot().await.item_id else {
+            self.set_status("Nothing has played yet");
+            return;
+        };
+        if let Some(ids) = &self.find_ids {
+            if let Some(idx) = ids.iter().position(|&x| x == id) {
+                self.cursor_index = idx;
+                self.set_status("Located now-playing track");
+                return;
+            }
+            self.find_ids = None;
+            self.find_query.clear();
+        }
+        match self.store.get_item_index(self.playlist_id, id) {
+            Ok(Some(idx1)) => {
+                self.cursor_index = idx1.saturating_sub(1);
+                self.set_status("Located now-playing track");
+            }
+            Ok(None) => self.set_warning("Now-playing track is no longer in the playlist"),
+            Err(e) => self.set_warning(format!("Locate failed: {e}")),
+        }
     }
 
     pub async fn persist(&mut self) {
@@ -865,6 +897,90 @@ mod tests {
 
         assert_eq!(runtime.status_message, None);
         assert_eq!(runtime.status_level, StatusLevel::Info);
+        let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
+    }
+
+    async fn seed_tracks(runtime: &mut AppRuntime, names: &[&str]) -> Vec<i64> {
+        let dir = runtime.paths.data_dir.clone();
+        let paths: Vec<PathBuf> = names
+            .iter()
+            .map(|n| {
+                let p = dir.join(n);
+                std::fs::write(&p, b"").unwrap();
+                p
+            })
+            .collect();
+        runtime.store.add_tracks(runtime.playlist_id, &paths).unwrap();
+        runtime
+            .store
+            .list_item_ids(runtime.playlist_id)
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn locate_playing_moves_cursor_to_currently_playing_track() {
+        let mut runtime = test_runtime("locate_playing").await;
+        let ids = seed_tracks(&mut runtime, &["a.mp3", "b.mp3", "c.mp3"]).await;
+        runtime.try_play(ids[2]).await;
+        runtime.cursor_index = 0;
+
+        runtime.handle(Command::LocatePlaying).await.unwrap();
+
+        // Assert against the same read path draw_playlist uses (fetch_rows),
+        // not a hardcoded index, so this can't pass by coincidence if
+        // get_item_index's pos_key order ever diverges from fetch_window's.
+        let landed = runtime.fetch_rows(runtime.cursor_index, 1).unwrap();
+        assert_eq!(landed[0].item_id, ids[2]);
+        let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
+    }
+
+    #[tokio::test]
+    async fn locate_playing_searches_within_active_find_results() {
+        let mut runtime = test_runtime("locate_playing_find").await;
+        let ids = seed_tracks(&mut runtime, &["a.mp3", "b.mp3", "c.mp3"]).await;
+        runtime.try_play(ids[2]).await;
+        runtime.find_ids = Some(vec![ids[1], ids[2]]);
+        runtime.cursor_index = 0;
+
+        runtime.handle(Command::LocatePlaying).await.unwrap();
+
+        let landed = runtime.fetch_rows(runtime.cursor_index, 1).unwrap();
+        assert_eq!(landed[0].item_id, ids[2]);
+        assert!(
+            runtime.find_ids.is_some(),
+            "an active find that already contains the playing track should be preserved"
+        );
+        let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
+    }
+
+    #[tokio::test]
+    async fn locate_playing_clears_find_when_playing_track_is_filtered_out() {
+        let mut runtime = test_runtime("locate_playing_find_miss").await;
+        let ids = seed_tracks(&mut runtime, &["a.mp3", "b.mp3", "c.mp3"]).await;
+        runtime.try_play(ids[0]).await;
+        runtime.find_ids = Some(vec![ids[1], ids[2]]);
+        runtime.cursor_index = 2;
+
+        runtime.handle(Command::LocatePlaying).await.unwrap();
+
+        assert!(
+            runtime.find_ids.is_none(),
+            "find should be cleared once it no longer contains the playing track"
+        );
+        let landed = runtime.fetch_rows(runtime.cursor_index, 1).unwrap();
+        assert_eq!(landed[0].item_id, ids[0]);
+        let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
+    }
+
+    #[tokio::test]
+    async fn locate_playing_is_a_noop_when_nothing_has_played() {
+        let mut runtime = test_runtime("locate_playing_none").await;
+        seed_tracks(&mut runtime, &["a.mp3", "b.mp3"]).await;
+        runtime.cursor_index = 1;
+
+        runtime.handle(Command::LocatePlaying).await.unwrap();
+
+        assert_eq!(runtime.cursor_index, 1);
         let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
     }
 }
