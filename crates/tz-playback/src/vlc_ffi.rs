@@ -159,15 +159,6 @@ impl LibVlcApi {
 fn prepend_dll_directory(dir: &Path) {
     use std::os::windows::ffi::OsStrExt;
 
-    if let Some(old) = std::env::var_os("PATH") {
-        let mut new_path = dir.as_os_str().to_os_string();
-        new_path.push(";");
-        new_path.push(old);
-        std::env::set_var("PATH", new_path);
-    } else {
-        std::env::set_var("PATH", dir);
-    }
-
     let wide: Vec<u16> = dir
         .as_os_str()
         .encode_wide()

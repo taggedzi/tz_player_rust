@@ -17,7 +17,7 @@ pub use events::{
 };
 pub use fake::FakePlaybackBackend;
 pub use status::BackendStatus;
-pub use vlc::{discover_vlc, VlcDiscovery, VlcPlaybackBackend};
+pub use vlc::{configure_vlc_environment, discover_vlc, VlcDiscovery, VlcPlaybackBackend};
 
 /// Supported playback backend identifiers (CLI / state).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

@@ -16,7 +16,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        # Compile and exercise VLC discovery/startup behavior on every
+        # supported desktop platform. A missing local VLC install is an
+        # expected, explicitly tested outcome.
+        os: [windows-latest, ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
 

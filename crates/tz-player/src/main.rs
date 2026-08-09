@@ -11,7 +11,7 @@ use tracing_subscriber::EnvFilter;
 use tz_analysis::ffmpeg_available;
 use tz_core::{about_info, app_paths_or_cwd, load_state, open_runtime, save_state, AppState};
 use tz_db::{open_database, SCHEMA_VERSION};
-use tz_playback::{discover_vlc, BackendKind};
+use tz_playback::{configure_vlc_environment, discover_vlc, BackendKind};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -83,9 +83,28 @@ enum Commands {
     },
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
     let cli = Cli::parse();
+    if matches!(&cli.backend, BackendCli::Vlc) {
+        // VLC_PLUGIN_PATH is process-global. Configure it while startup is
+        // still single-threaded, before Tokio creates its worker threads.
+        configure_vlc_environment();
+    }
+
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("Could not start async runtime: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    runtime.block_on(run(cli))
+}
+
+async fn run(cli: Cli) -> ExitCode {
     init_logging(&cli);
     tracing::info!(version = VERSION, "tz-player starting");
 

@@ -216,11 +216,6 @@ impl Engine {
     fn new(lib_dir: &Path, quiet: bool) -> Result<Self, String> {
         let api = unsafe { LibVlcApi::load(lib_dir)? };
 
-        let plugin_dir = lib_dir.join("plugins");
-        if plugin_dir.is_dir() {
-            // Modern VLC uses env (CLI --plugin-path was removed).
-            std::env::set_var("VLC_PLUGIN_PATH", &plugin_dir);
-        }
         let mut args: Vec<String> = Vec::new();
         if quiet {
             args.push("--quiet".into());

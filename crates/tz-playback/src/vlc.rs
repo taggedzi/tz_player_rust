@@ -96,6 +96,31 @@ pub fn discover_vlc() -> VlcDiscovery {
     }
 }
 
+/// Configure VLC's plugin lookup before the application starts any threads.
+///
+/// VLC's Windows distribution keeps its plugins beside `libvlc.dll` and uses
+/// `VLC_PLUGIN_PATH` to find them when libVLC is embedded. Call this once from
+/// synchronous process startup, before constructing a Tokio runtime. Unix VLC
+/// packages provide their own compiled-in plugin paths, so this function is a
+/// deliberate no-op on Linux and macOS.
+pub fn configure_vlc_environment() {
+    #[cfg(windows)]
+    {
+        if std::env::var_os("VLC_PLUGIN_PATH").is_some() {
+            return;
+        }
+        let Some(lib_dir) = discover_vlc().libvlc_dir else {
+            return;
+        };
+        let plugin_dir = lib_dir.join("plugins");
+        if plugin_dir.is_dir() {
+            // SAFETY: the binary calls this during single-threaded startup,
+            // before the Tokio runtime or VLC worker is constructed.
+            std::env::set_var("VLC_PLUGIN_PATH", plugin_dir);
+        }
+    }
+}
+
 fn which(name: &str) -> Option<PathBuf> {
     std::env::var_os("PATH").and_then(|paths| {
         std::env::split_paths(&paths).find_map(|dir| {
@@ -467,6 +492,14 @@ mod tests {
     fn discover_does_not_panic() {
         let d = discover_vlc();
         let _ = d.is_usable();
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn unix_startup_does_not_mutate_vlc_plugin_path() {
+        let before = std::env::var_os("VLC_PLUGIN_PATH");
+        configure_vlc_environment();
+        assert_eq!(std::env::var_os("VLC_PLUGIN_PATH"), before);
     }
 
     #[tokio::test]

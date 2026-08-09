@@ -13,7 +13,12 @@ release-hardening phase.
 
 ### Security Tier 1 — Address before public release
 
-- [ ] **Eliminate multithreaded environment mutation.** Remove or relocate the
+- [x] **Eliminate multithreaded environment mutation.** `VLC_PLUGIN_PATH` is
+  now configured only on Windows during synchronous binary/example startup,
+  before the Tokio runtime is built. The VLC worker no longer mutates the
+  environment, Unix configuration is a tested no-op, late `PATH` mutation was
+  removed from the loader, and CI covers Windows, Linux, and macOS builds.
+  Remove or relocate the
   `VLC_PLUGIN_PATH` mutation from the VLC worker. Configure it before Tokio
   starts, avoid the mutation on Unix, or restrict it to Windows if that is the
   only platform requiring it. Verify VLC startup on Windows, Linux, and macOS.
