@@ -14,8 +14,11 @@ All three done.
 - [x] Add missing music files that are supported by vlc — `is_media_extension` extended with mp4, m4b, mka, ac3, dts, mpc, tta, spx, caf, mid, midi.
 
 ## Tier 1 — Missing core functionality
-- Project needs an "about" information output. CLI, TUI, and any other eventual user exposed interface need to display the product information, github page (does not exist yet), version and any useful debug info without exposing sensitive information about a user.
-- Warnings and Errors surface to the TUI interface. Warnings/Errors need a clean way to surface that do not interfear with playback UNLESS the Warning/Error cause is disrupting playback.
+
+Both done.
+
+- [x] "about" information output — `tz_core::about_info()` (`crates/tz-core/src/about.rs`) is the single shared source: name, version, description, repository, license, schema version, target/profile. No local paths or machine-specific data (that's `tz-player doctor`'s job). Surfaced via `tz-player about` (CLI) and the `i` key in the TUI (footer status line). Note: `about_info()`'s `env!("CARGO_PKG_*")` calls resolve to `tz-core`'s own package metadata, which only matches the product because every crate inherits `[workspace.package]` — see the comment on `about_info()` if that ever changes.
+- [x] Warnings/Errors surfacing — footer status line now carries severity (`tz_core::StatusLevel`: Info/Warn/Error), colored in the TUI (plain/yellow/red) with a `[WARN]`/`[ERROR]` prefix. Only playback-backend failures (`PlayerError::Playback`, i.e. the actual VLC/libVLC audio path) are `Error` and persist until dismissed with Esc; everything else (metadata refresh, clear-playlist, add-paths DB errors, missing/unreadable track rows) is a `Warn` that auto-clears like a normal status message (~4s). Previously several of these failures (refresh metadata, clear playlist, add-paths, most transport commands) were silently discarded entirely — they now actually reach the user for the first time.
 
 ## Tier 2 — Usability gaps in daily TUI use
 - There is no marker that shows (in the playlist) which song is playing, AND in a large playlist no way to easily locate which song is playing. There needs to be 2 marking systems 1. displays a cursor type effect showing the user what song is being selected, and 2. a marker of some kind that easily allows a user to find the current playing song. (possibly even a key that navigates directly to it.)

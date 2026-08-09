@@ -12,10 +12,21 @@ use tz_playback::{BackendKind, BackendStatus};
 use crate::levels::LevelService;
 use crate::metadata::{read_track_meta, refresh_playlist_metadata};
 use crate::paths::AppPaths;
-use crate::player::{PlayerService, RepeatMode};
+use crate::player::{PlayerError, PlayerService, RepeatMode};
 use crate::state::{load_state_with_notice, save_state, AppState};
 
 const STATUS_TTL: Duration = Duration::from_secs(4);
+
+/// Severity of the current footer status message. Only `Error` (reserved for
+/// playback-backend failures — the audio path itself is disrupted) survives
+/// past `STATUS_TTL`; it stays until explicitly dismissed. `Warn` and `Info`
+/// both auto-clear, since neither indicates playback is actually broken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusLevel {
+    Info,
+    Warn,
+    Error,
+}
 
 /// Headless-capable app session used by TUI and CLI.
 pub struct AppRuntime {
@@ -28,6 +39,7 @@ pub struct AppRuntime {
     pub cursor_index: usize,
     pub quit_requested: bool,
     pub status_message: Option<String>,
+    pub status_level: StatusLevel,
     status_message_set_at: Option<Instant>,
     /// Filtered item ids when find is active; empty means show all.
     pub find_query: String,
@@ -125,6 +137,7 @@ pub async fn open_runtime(
         cursor_index,
         quit_requested: false,
         status_message: None,
+        status_level: StatusLevel::Info,
         status_message_set_at: None,
         find_query: String::new(),
         find_ids: None,
@@ -142,10 +155,12 @@ pub async fn open_runtime(
     };
     if let Some(notice) = state_notice {
         // Prefer a short single-line status for the TUI footer.
-        runtime.set_status("State file was invalid; settings reset to defaults");
+        runtime.set_warning("State file was invalid; settings reset to defaults");
         tracing::warn!("{notice}");
     } else if let Some(fb) = runtime.backend_fallback_notice.clone() {
-        runtime.set_status(fb);
+        // The playback backend itself failed to start — this is exactly the
+        // "disrupting playback" case, so it stays until dismissed.
+        runtime.set_error(fb);
     } else if runtime.playlist_count() == 0 {
         runtime.set_status("Empty playlist — press a to add music, or ? for help");
     }
@@ -153,18 +168,40 @@ pub async fn open_runtime(
 }
 
 impl AppRuntime {
-    /// Set a transient footer status message (auto-clears after a few seconds).
+    /// Set a transient, informational footer status message (auto-clears
+    /// after a few seconds).
     pub fn set_status(&mut self, msg: impl Into<String>) {
+        self.set_status_with_level(msg, StatusLevel::Info);
+    }
+
+    /// Set a transient warning (auto-clears like `set_status`, but rendered
+    /// distinctly). For problems that don't disrupt playback itself.
+    pub fn set_warning(&mut self, msg: impl Into<String>) {
+        self.set_status_with_level(msg, StatusLevel::Warn);
+    }
+
+    /// Set an error that persists until dismissed (does not auto-clear).
+    /// Reserved for playback-backend failures — the audio path is disrupted.
+    pub fn set_error(&mut self, msg: impl Into<String>) {
+        self.set_status_with_level(msg, StatusLevel::Error);
+    }
+
+    fn set_status_with_level(&mut self, msg: impl Into<String>, level: StatusLevel) {
         self.status_message = Some(msg.into());
+        self.status_level = level;
         self.status_message_set_at = Some(Instant::now());
     }
 
     pub fn clear_status(&mut self) {
         self.status_message = None;
+        self.status_level = StatusLevel::Info;
         self.status_message_set_at = None;
     }
 
     fn expire_status(&mut self) {
+        if self.status_level == StatusLevel::Error {
+            return;
+        }
         if let Some(at) = self.status_message_set_at {
             if at.elapsed() >= STATUS_TTL {
                 self.clear_status();
@@ -319,14 +356,13 @@ impl AppRuntime {
             Command::PlayPause => {
                 let status = self.player.snapshot().await.status;
                 if matches!(status, BackendStatus::Playing | BackendStatus::Paused) {
-                    self.player
-                        .toggle_pause()
-                        .await
-                        .map_err(|e| ControlError::Message(e.to_string()))?;
+                    if let Err(e) = self.player.toggle_pause().await {
+                        self.report_player_error(e);
+                    }
                 } else if self.playlist_count() == 0 {
                     self.set_status("Playlist empty — press a to add music");
                 } else if let Some(id) = self.cursor_item_id() {
-                    self.try_play(id).await?;
+                    self.try_play(id).await;
                 } else {
                     self.set_status("No track selected");
                 }
@@ -335,69 +371,60 @@ impl AppRuntime {
                 if self.playlist_count() == 0 {
                     self.set_status("Playlist empty — press a to add music");
                 } else if let Some(id) = self.cursor_item_id() {
-                    self.try_play(id).await?;
+                    self.try_play(id).await;
                 } else {
                     self.set_status("No track selected");
                 }
             }
             Command::PlayItem { item_id } => {
-                self.try_play(item_id).await?;
+                self.try_play(item_id).await;
             }
             Command::Stop => {
-                self.player
-                    .stop()
-                    .await
-                    .map_err(|e| ControlError::Message(e.to_string()))?;
+                if let Err(e) = self.player.stop().await {
+                    self.report_player_error(e);
+                }
             }
             Command::Next => {
-                self.player
-                    .next()
-                    .await
-                    .map_err(|e| ControlError::Message(e.to_string()))?;
-                self.schedule_analysis_for_current().await;
+                match self.player.next().await {
+                    Ok(()) => self.schedule_analysis_for_current().await,
+                    Err(e) => self.report_player_error(e),
+                }
             }
             Command::Previous => {
-                self.player
-                    .previous()
-                    .await
-                    .map_err(|e| ControlError::Message(e.to_string()))?;
-                self.schedule_analysis_for_current().await;
+                match self.player.previous().await {
+                    Ok(()) => self.schedule_analysis_for_current().await,
+                    Err(e) => self.report_player_error(e),
+                }
             }
             Command::Seek { position_ms } => {
-                self.player
-                    .seek_ms(position_ms)
-                    .await
-                    .map_err(|e| ControlError::Message(e.to_string()))?;
+                if let Err(e) = self.player.seek_ms(position_ms).await {
+                    self.report_player_error(e);
+                }
             }
             Command::SeekRelative { delta_ms } => {
-                self.player
-                    .seek_relative(delta_ms)
-                    .await
-                    .map_err(|e| ControlError::Message(e.to_string()))?;
+                if let Err(e) = self.player.seek_relative(delta_ms).await {
+                    self.report_player_error(e);
+                }
             }
             Command::SetVolume { volume } => {
-                self.player
-                    .set_volume(volume)
-                    .await
-                    .map_err(|e| ControlError::Message(e.to_string()))?;
+                if let Err(e) = self.player.set_volume(volume).await {
+                    self.report_player_error(e);
+                }
             }
             Command::VolumeDelta { delta } => {
-                self.player
-                    .volume_delta(delta)
-                    .await
-                    .map_err(|e| ControlError::Message(e.to_string()))?;
+                if let Err(e) = self.player.volume_delta(delta).await {
+                    self.report_player_error(e);
+                }
             }
             Command::SetSpeed { speed } => {
-                self.player
-                    .set_speed(speed)
-                    .await
-                    .map_err(|e| ControlError::Message(e.to_string()))?;
+                if let Err(e) = self.player.set_speed(speed).await {
+                    self.report_player_error(e);
+                }
             }
             Command::SpeedDelta { delta } => {
-                self.player
-                    .speed_delta(delta)
-                    .await
-                    .map_err(|e| ControlError::Message(e.to_string()))?;
+                if let Err(e) = self.player.speed_delta(delta).await {
+                    self.report_player_error(e);
+                }
             }
             Command::CycleRepeat => self.player.cycle_repeat().await,
             Command::ToggleShuffle => self.player.toggle_shuffle().await,
@@ -459,13 +486,15 @@ impl AppRuntime {
             }
             Command::ConfirmClear { yes } => {
                 if yes && self.confirm_clear {
-                    self.store
-                        .clear_playlist(self.playlist_id)
-                        .map_err(|e| ControlError::Message(e.to_string()))?;
-                    self.cursor_index = 0;
-                    self.find_ids = None;
-                    self.find_query.clear();
-                    self.set_status("Playlist cleared");
+                    match self.store.clear_playlist(self.playlist_id) {
+                        Ok(()) => {
+                            self.cursor_index = 0;
+                            self.find_ids = None;
+                            self.find_query.clear();
+                            self.set_status("Playlist cleared");
+                        }
+                        Err(e) => self.set_warning(format!("Clear failed: {e}")),
+                    }
                 } else if self.confirm_clear {
                     self.set_status("Clear cancelled");
                 }
@@ -475,9 +504,10 @@ impl AppRuntime {
                 if self.playlist_count() == 0 {
                     self.set_status("No tracks to refresh");
                 } else {
-                    let n = refresh_playlist_metadata(&self.store, self.playlist_id, 2000)
-                        .map_err(|e| ControlError::Message(e.to_string()))?;
-                    self.set_status(format!("Refreshed metadata for {n} track(s)"));
+                    match refresh_playlist_metadata(&self.store, self.playlist_id, 2000) {
+                        Ok(n) => self.set_status(format!("Refreshed metadata for {n} track(s)")),
+                        Err(e) => self.set_warning(format!("Metadata refresh failed: {e}")),
+                    }
                 }
             }
             Command::CycleVisualizer => {
@@ -526,10 +556,13 @@ impl AppRuntime {
 
     fn add_paths_internal(&mut self, paths: &[PathBuf]) -> Result<(), ControlError> {
         let expanded = expand_media_paths(paths);
-        let added = self
-            .store
-            .add_tracks(self.playlist_id, &expanded)
-            .map_err(|e| ControlError::Message(e.to_string()))?;
+        let added = match self.store.add_tracks(self.playlist_id, &expanded) {
+            Ok(n) => n,
+            Err(e) => {
+                self.set_warning(format!("Add failed: {e}"));
+                return Ok(());
+            }
+        };
         let _ = refresh_playlist_metadata(&self.store, self.playlist_id, 500);
         // Background-ish analysis for new paths (blocking for now, short tracks OK)
         for p in &expanded {
@@ -550,17 +583,25 @@ impl AppRuntime {
         Ok(())
     }
 
-    async fn try_play(&mut self, item_id: i64) -> Result<(), ControlError> {
+    async fn try_play(&mut self, item_id: i64) {
         match self.player.play_item(self.playlist_id, item_id).await {
             Ok(()) => {
                 self.schedule_analysis_for_current().await;
                 self.set_status("Playing");
-                Ok(())
             }
-            Err(e) => {
-                self.set_status(e.to_string());
-                Ok(())
-            }
+            Err(e) => self.report_player_error(e),
+        }
+    }
+
+    /// Surface a player-layer failure at the right severity: only backend
+    /// (VLC/libVLC) failures actually disrupt playback and persist until
+    /// dismissed; data-layer failures (missing/unreadable track row) are
+    /// quiet, auto-clearing warnings.
+    fn report_player_error(&mut self, e: PlayerError) {
+        if e.is_backend_failure() {
+            self.set_error(e.to_string());
+        } else {
+            self.set_warning(e.to_string());
         }
     }
 
@@ -755,5 +796,75 @@ mod tests {
                 "expected {ext} to be recognized as a media extension"
             );
         }
+    }
+
+    async fn test_runtime(name: &str) -> AppRuntime {
+        let dir = temp_dir(name);
+        let paths = AppPaths {
+            data_dir: dir.clone(),
+            config_dir: dir.clone(),
+            log_dir: dir.join("logs"),
+            state_file: dir.join("state.json"),
+            db_file: dir.join("db.sqlite3"),
+        };
+        open_runtime(paths, Some(BackendKind::Fake)).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn set_error_persists_past_ttl() {
+        let mut runtime = test_runtime("error_ttl").await;
+        runtime.set_error("playback backend failed");
+        runtime.status_message_set_at =
+            Some(Instant::now() - STATUS_TTL - Duration::from_millis(50));
+
+        runtime.expire_status();
+
+        assert_eq!(
+            runtime.status_message.as_deref(),
+            Some("playback backend failed")
+        );
+        assert_eq!(runtime.status_level, StatusLevel::Error);
+        let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
+    }
+
+    #[tokio::test]
+    async fn set_warning_expires_like_info() {
+        let mut runtime = test_runtime("warning_ttl").await;
+        runtime.set_warning("metadata refresh failed");
+        runtime.status_message_set_at =
+            Some(Instant::now() - STATUS_TTL - Duration::from_millis(50));
+
+        runtime.expire_status();
+
+        assert_eq!(runtime.status_message, None);
+        assert_eq!(runtime.status_level, StatusLevel::Info);
+        let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
+    }
+
+    #[tokio::test]
+    async fn report_player_error_classifies_by_variant() {
+        let mut runtime = test_runtime("player_error_classification").await;
+
+        runtime.report_player_error(PlayerError::Db("row missing".into()));
+        assert_eq!(runtime.status_level, StatusLevel::Warn);
+
+        runtime.report_player_error(PlayerError::Playback(
+            tz_playback::PlaybackError::message("VLC crashed"),
+        ));
+        assert_eq!(runtime.status_level, StatusLevel::Error);
+
+        let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
+    }
+
+    #[tokio::test]
+    async fn clear_status_dismisses_an_active_error() {
+        let mut runtime = test_runtime("error_dismiss").await;
+        runtime.set_error("playback backend failed");
+
+        runtime.clear_status();
+
+        assert_eq!(runtime.status_message, None);
+        assert_eq!(runtime.status_level, StatusLevel::Info);
+        let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
     }
 }

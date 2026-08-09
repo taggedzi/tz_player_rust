@@ -2,6 +2,7 @@
 //!
 //! The TUI and future headless clients depend on this crate, not the reverse.
 
+mod about;
 mod levels;
 mod metadata;
 mod paths;
@@ -9,11 +10,12 @@ mod player;
 mod runtime;
 mod state;
 
+pub use about::{about_info, AboutInfo, PRODUCT_DESCRIPTION, PRODUCT_NAME};
 pub use levels::{AnalysisSample, LevelSample, LevelService, LevelSource};
 pub use metadata::{read_track_meta, refresh_playlist_metadata};
 pub use paths::{app_paths, app_paths_or_cwd, AppPaths};
 pub use player::{PlayerError, PlayerService, PlayerState, RepeatMode};
-pub use runtime::{open_runtime, AppRuntime, RuntimeError};
+pub use runtime::{open_runtime, AppRuntime, RuntimeError, StatusLevel};
 pub use state::{load_state, load_state_with_notice, save_state, AppState};
 
 /// Speed limits (ADR-0003 / Python parity).

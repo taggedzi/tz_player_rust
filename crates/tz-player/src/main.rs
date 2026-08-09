@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use tracing_subscriber::EnvFilter;
 
 use tz_analysis::ffmpeg_available;
-use tz_core::{app_paths_or_cwd, load_state, open_runtime, save_state, AppState};
+use tz_core::{about_info, app_paths_or_cwd, load_state, open_runtime, save_state, AppState};
 use tz_db::{open_database, SCHEMA_VERSION};
 use tz_playback::{discover_vlc, BackendKind};
 
@@ -67,6 +67,8 @@ enum Commands {
     Setup,
     /// Print resolved paths and schema version
     Paths,
+    /// Print product info: name, version, repository, license, schema
+    About,
     /// Add files or folders to the default playlist
     Add {
         /// Media files or directories
@@ -92,6 +94,10 @@ async fn main() -> ExitCode {
         }
         Some(Commands::Paths) => {
             cmd_paths();
+            ExitCode::SUCCESS
+        }
+        Some(Commands::About) => {
+            println!("{}", about_info());
             ExitCode::SUCCESS
         }
         Some(Commands::Add { paths }) => match cmd_add(cli.backend.into(), paths).await {

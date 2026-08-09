@@ -567,6 +567,16 @@ pub enum PlayerError {
     Playback(#[from] PlaybackError),
 }
 
+impl PlayerError {
+    /// True only for failures in the actual audio backend (VLC/libVLC) —
+    /// i.e. playback is genuinely disrupted. `Db`/`Message` cover data-layer
+    /// problems (e.g. a missing playlist row) where audio itself isn't
+    /// necessarily broken.
+    pub fn is_backend_failure(&self) -> bool {
+        matches!(self, PlayerError::Playback(_))
+    }
+}
+
 // Keep constants referenced for UI keybinding docs.
 #[allow(dead_code)]
 const _SPEED_BOUNDS: (f64, f64, f64) = (SPEED_MIN, SPEED_MAX, SPEED_STEP);

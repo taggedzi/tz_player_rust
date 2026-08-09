@@ -156,6 +156,7 @@ async fn ui_loop(
                     f,
                     root[3],
                     runtime.status_message.as_deref(),
+                    runtime.status_level,
                     &runtime.input_mode,
                     &runtime.input_buffer,
                     runtime.confirm_clear,
@@ -338,6 +339,7 @@ fn draw_footer(
     f: &mut ratatui::Frame<'_>,
     area: Rect,
     msg: Option<&str>,
+    status_level: tz_core::StatusLevel,
     input_mode: &str,
     input_buffer: &str,
     confirm_clear: bool,
@@ -349,26 +351,30 @@ fn draw_footer(
     } else if input_mode == "add_path" {
         format!("Add path: {input_buffer}_   (Enter=add Esc=cancel)")
     } else if input_mode == "help" {
-        "HELP: ↑↓ cursor  Space play  n/p next/prev  ←→ seek  -/+ vol  [] speed  f find  a add  z viz  Esc/q close"
+        "HELP: ↑↓ cursor  Space play  n/p next/prev  ←→ seek  -/+ vol  [] speed  f find  a add  z viz  i about  Esc/q close"
             .into()
     } else {
-        "↑/↓ Space n/p x ←/→ -/+ [] r/s f a d c m z  ?=help  q quit".into()
+        "↑/↓ Space n/p x ←/→ -/+ [] r/s f a d c m z i  ?=help  q quit".into()
     };
-    let line = if let Some(m) = msg {
-        if input_mode == "help" {
-            help
-        } else {
-            format!("{help}  |  {m}")
-        }
+    let (line, style) = if input_mode == "help" {
+        (
+            help,
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else if let Some(m) = msg {
+        let (prefix, color) = match status_level {
+            tz_core::StatusLevel::Error => ("[ERROR] ", Color::Red),
+            tz_core::StatusLevel::Warn => ("[WARN] ", Color::Yellow),
+            tz_core::StatusLevel::Info => ("", Color::DarkGray),
+        };
+        (
+            format!("{help}  |  {prefix}{m}"),
+            Style::default().fg(color),
+        )
     } else {
-        help
-    };
-    let style = if input_mode == "help" {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::DarkGray)
+        (help, Style::default().fg(Color::DarkGray))
     };
     let p = Paragraph::new(line).style(style);
     f.render_widget(p, area);
@@ -490,6 +496,9 @@ async fn handle_key(
             runtime.set_visualizer_id(id);
             runtime.set_status(format!("Visualizer: {} ({id})", viz.active_name()));
         }
+        KeyCode::Char('i') => {
+            runtime.set_status(tz_core::about_info().tui_line());
+        }
         KeyCode::Home => {
             runtime.cursor_index = 0;
         }
@@ -583,6 +592,13 @@ async fn handle_key(
             let _ = runtime.handle(Command::RefreshMetadata).await;
         }
         KeyCode::Esc => {
+            if runtime.status_level == tz_core::StatusLevel::Error {
+                // Dismiss the error on its own keypress; don't also clear
+                // find in the same Esc, or the user can't tell which
+                // happened.
+                runtime.clear_status();
+                return Ok(false);
+            }
             if runtime.find_ids.is_some() {
                 let _ = runtime.handle(Command::ClearFind).await;
             }
