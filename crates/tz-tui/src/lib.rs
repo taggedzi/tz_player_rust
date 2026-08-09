@@ -14,7 +14,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Terminal;
 use tz_control::Command;
 use tz_core::AppRuntime;
@@ -164,6 +164,9 @@ async fn ui_loop(
                     &runtime.input_buffer,
                     runtime.confirm_clear,
                 );
+                if runtime.input_mode == "help" {
+                    draw_help_overlay(f, f.area());
+                }
             })
             .map_err(|e| TuiError::Io(e.to_string()))?;
 
@@ -329,6 +332,19 @@ fn draw_visualizer(
     f.render_widget(p, area);
 }
 
+/// Style for a togglable player-state indicator (repeat/shuffle): bold green
+/// when active, dim gray when off, so it reads at a glance instead of
+/// blending into the rest of the transport line.
+fn state_style(active: bool) -> Style {
+    if active {
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    }
+}
+
 fn draw_transport(f: &mut ratatui::Frame<'_>, area: Rect, snap: &tz_control::TransportSnapshot) {
     let pos = format_time(snap.position_ms);
     let dur = format_time(snap.duration_ms);
@@ -343,18 +359,30 @@ fn draw_transport(f: &mut ratatui::Frame<'_>, area: Rect, snap: &tz_control::Tra
         .as_deref()
         .map(|a| format!("  analysis:{a}"))
         .unwrap_or_default();
-    let text = format!(
-        " {}  {} {} {}  vol {}%  speed {:.2}x  rep {}  shuf {}{lvl}{analysis} ",
+    let prefix = format!(
+        " {}  {} {} {}  vol {}%  speed {:.2}x  ",
         snap.status.to_uppercase(),
         pos,
         bar,
         dur,
         snap.volume,
         snap.speed,
-        snap.repeat_mode,
-        if snap.shuffle { "on" } else { "off" }
     );
-    let mut lines = vec![Line::from(text)];
+    let suffix = format!("{lvl}{analysis} ");
+    let shuffle_label = if snap.shuffle { "on" } else { "off" };
+    let mut lines = vec![Line::from(vec![
+        Span::raw(prefix),
+        Span::styled(
+            format!("rep {}", snap.repeat_mode),
+            state_style(snap.repeat_mode != "off"),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            format!("shuf {shuffle_label}"),
+            state_style(snap.shuffle),
+        ),
+        Span::raw(suffix),
+    ])];
     if let Some(err) = &snap.error {
         lines.push(Line::from(Span::styled(
             err.chars().take(120).collect::<String>(),
@@ -383,8 +411,7 @@ fn draw_footer(
     } else if input_mode == "add_path" {
         format!("Add path: {input_buffer}_   (Enter=add Esc=cancel)")
     } else if input_mode == "help" {
-        "HELP: ↑↓ cursor  Space play  n/p next/prev  ←→ seek  -/+ vol  [] speed  f find  a add  z viz  i about  g locate playing  Esc/q close"
-            .into()
+        "Esc / q / any key — close help".into()
     } else {
         "↑/↓ Space n/p x ←/→ -/+ [] r/s f a d c m z i g  ?=help  q quit".into()
     };
@@ -410,6 +437,119 @@ fn draw_footer(
     };
     let p = Paragraph::new(line).style(style);
     f.render_widget(p, area);
+}
+
+/// Center a fixed-size box within `r`, clamped so it never exceeds `r`.
+/// Unlike a percentage-of-screen popup, this can't silently clip
+/// fixed-length content on a small terminal — it only shrinks to fit.
+fn centered_fixed_rect(width: u16, height: u16, r: Rect) -> Rect {
+    let width = width.min(r.width);
+    let height = height.min(r.height);
+    let x = r.x + (r.width.saturating_sub(width)) / 2;
+    let y = r.y + (r.height.saturating_sub(height)) / 2;
+    Rect::new(x, y, width, height)
+}
+
+/// Full keybinding reference, grouped by category. Drawn as a centered
+/// overlay (not squeezed into the 2-row footer) since the flat list is
+/// long enough that a single non-wrapping line was both cramped and,
+/// historically, incomplete.
+const HELP_KEY_W: usize = 14;
+const HELP_DESC_W: usize = 22;
+
+/// Two mnemonic/description pairs packed onto one line, so the full
+/// reference fits an 80x24 terminal without scrolling (verified by
+/// `help_overlay_documents_every_previously_undocumented_key_on_a_standard_terminal`).
+/// Only used for entries short enough that `d1` won't blow past
+/// `HELP_DESC_W` and misalign the second key column.
+fn help_entry2(
+    key_style: Style,
+    desc_style: Style,
+    k1: &'static str,
+    d1: &'static str,
+    k2: &'static str,
+    d2: &'static str,
+) -> Line<'static> {
+    Line::from(vec![
+        Span::raw("  "),
+        Span::styled(format!("{k1:<HELP_KEY_W$}"), key_style),
+        Span::styled(format!("{d1:<HELP_DESC_W$}"), desc_style),
+        Span::raw("  "),
+        Span::styled(format!("{k2:<HELP_KEY_W$}"), key_style),
+        Span::styled(d2, desc_style),
+    ])
+}
+
+/// A single mnemonic/description, for entries whose description is too
+/// long to pair without overflowing `HELP_DESC_W`.
+fn help_entry1(key_style: Style, desc_style: Style, k: &'static str, d: &'static str) -> Line<'static> {
+    Line::from(vec![
+        Span::raw("  "),
+        Span::styled(format!("{k:<HELP_KEY_W$}"), key_style),
+        Span::styled(d, desc_style),
+    ])
+}
+
+/// Full keybinding reference, grouped by category. Drawn as a centered
+/// overlay (not squeezed into the 2-row footer) since the flat list is
+/// long enough that a single non-wrapping line was both cramped and,
+/// historically, incomplete. Packed two entries per line (ASCII only —
+/// no arrow/shift glyphs, which are ambiguous-width in many terminals and
+/// would misalign the second column) to fit an 80x24 terminal in full.
+fn help_lines() -> Vec<Line<'static>> {
+    let heading = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+    let key = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let desc = Style::default().fg(Color::Gray);
+    let e2 = |k1, d1, k2, d2| help_entry2(key, desc, k1, d1, k2, d2);
+    let e1 = |k, d| help_entry1(key, desc, k, d);
+    let section =
+        |title: &'static str| Line::from(vec![Span::raw(" "), Span::styled(title, heading)]);
+    vec![
+        section("Playback"),
+        e2("Space", "Play / Pause", "x", "Stop"),
+        e2("n / p", "Next / Previous", "Enter", "Play selected"),
+        e2("Left/Right", "Seek +/-5s", "Shift+L/R", "Seek +/-30s"),
+        e2("- / +", "Volume +/-5%", "[ / ]", "Speed +/-0.25x"),
+        e2("\\", "Reset speed to 1.0x", "r", "Cycle repeat mode"),
+        e1("s", "Toggle shuffle"),
+        section("Navigation"),
+        e2("Up/Down", "Move cursor", "Home/End", "Top / Bottom"),
+        e1("PgUp / PgDn", "Page up / down"),
+        e1("g", "Locate now-playing track"),
+        section("Playlist"),
+        e2("a", "Add path", "d / Del", "Remove selected"),
+        e2("c", "Clear playlist", "m", "Refresh metadata"),
+        e2("f", "Find", "Shift+U/D", "Reorder up/down"),
+        section("View"),
+        e2("z", "Cycle visualizer", "i", "About / version"),
+        Line::from(Span::styled(
+            "Esc / q / any key - close",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+        )),
+    ]
+}
+
+fn draw_help_overlay(f: &mut ratatui::Frame<'_>, area: Rect) {
+    let lines = help_lines();
+    // Size from actual content, not a screen percentage: a percentage popup
+    // silently clips fixed-length content on a small terminal (verified on
+    // an 80x24 fixture). This only ever shrinks to fit the screen.
+    let content_width = lines.iter().map(Line::width).max().unwrap_or(40) as u16;
+    let popup = centered_fixed_rect(content_width + 4, lines.len() as u16 + 2, area);
+    f.render_widget(Clear, popup);
+    let p = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Keyboard Shortcuts ")
+            .border_style(Style::default().fg(Color::Yellow)),
+    );
+    f.render_widget(p, popup);
 }
 
 fn format_time(ms: u64) -> String {
@@ -744,5 +884,60 @@ mod tests {
                 "did not expect any marker when playing_item_id is None"
             );
         }
+    }
+
+    fn buffer_text(buf: &Buffer) -> String {
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            text.push_str(&row_text(buf, y));
+            text.push('\n');
+        }
+        text
+    }
+
+    #[test]
+    fn help_overlay_documents_every_previously_undocumented_key_on_a_standard_terminal() {
+        // 80x24 is the common default terminal size, not a generous test
+        // fixture — a percentage-of-screen popup with ~32 lines of fixed
+        // content clips silently on a screen this size. Sizing the popup
+        // from content length (not a screen percentage) is what's under
+        // test here.
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| draw_help_overlay(f, f.area()))
+            .unwrap();
+        let text = buffer_text(&terminal.backend().buffer().clone());
+
+        for needle in [
+            "Keyboard Shortcuts",
+            "Play / Pause",
+            "Cycle repeat mode",
+            "Toggle shuffle",
+            "Reset speed to 1.0x",
+            "Locate now-playing track",
+            "Remove selected",
+            "Refresh metadata",
+            "Reorder",
+            "Cycle visualizer",
+            "About",
+            "Esc / q / any key",
+        ] {
+            assert!(
+                text.contains(needle),
+                "expected help overlay to mention {needle:?} on an 80x24 terminal, got:\n{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn state_style_highlights_active_state() {
+        let active = state_style(true);
+        let inactive = state_style(false);
+
+        assert_eq!(active.fg, Some(Color::Green));
+        assert!(active.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(inactive.fg, Some(Color::DarkGray));
+        assert_ne!(active.fg, inactive.fg);
     }
 }
