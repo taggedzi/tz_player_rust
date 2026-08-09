@@ -47,6 +47,7 @@ async fn ui_loop(
     viz: &mut VisualizerHost,
 ) -> Result<(), TuiError> {
     let mut scroll_offset = 0usize;
+    let mut browse_scroll_offset = 0usize;
 
     loop {
         runtime.tick().await;
@@ -168,6 +169,9 @@ async fn ui_loop(
                 );
                 if runtime.input_mode == "help" {
                     draw_help_overlay(f, f.area());
+                }
+                if runtime.input_mode == "browse" {
+                    draw_browse_overlay(f, f.area(), runtime, &mut browse_scroll_offset);
                 }
             })
             .map_err(|e| TuiError::Io(e.to_string()))?;
@@ -425,8 +429,8 @@ fn draw_footer(
         "Clear playlist? [y]es / [n]o".to_string()
     } else if input_mode == "find" {
         format!("Find: {input_buffer}_   (live — Enter=keep Esc=cancel)")
-    } else if input_mode == "add_path" {
-        format!("Add path: {input_buffer}_   (Enter=add Esc=cancel)")
+    } else if input_mode == "browse" {
+        "Browse: Enter=open/add file  a/Space=add folder  Backspace=up  Esc=cancel".into()
     } else if input_mode == "help" {
         "Esc / q / any key — close help".into()
     } else {
@@ -568,6 +572,81 @@ fn draw_help_overlay(f: &mut ratatui::Frame<'_>, area: Rect) {
             .border_style(Style::default().fg(Color::Yellow)),
     );
     f.render_widget(p, popup);
+}
+
+/// Folder-browser modal: a single-pane directory listing (dirs then media
+/// files, per `list_dir`), with the same manual cursor-highlight convention
+/// as `draw_playlist` (no `ListState`). `scroll_offset` is clamped here,
+/// against the same popup height used to render — computing both in one
+/// place avoids the clamp/render size mismatch that bit `main_layout`
+/// before it existed as a single shared function.
+fn draw_browse_overlay(
+    f: &mut ratatui::Frame<'_>,
+    area: Rect,
+    runtime: &AppRuntime,
+    scroll_offset: &mut usize,
+) {
+    let title = match &runtime.browse_dir {
+        Some(dir) => format!(" Add — {} ", dir.display()),
+        None => " Add — select a drive ".to_string(),
+    };
+    let popup_w = (area.width * 7 / 10).clamp(20.min(area.width), area.width);
+    let popup_h = (area.height * 7 / 10).clamp(6.min(area.height), area.height);
+    let popup = centered_fixed_rect(popup_w, popup_h, area);
+    let visible = popup.height.saturating_sub(2).max(1) as usize; // borders
+
+    let cursor = runtime.browse_cursor;
+    if cursor < *scroll_offset {
+        *scroll_offset = cursor;
+    } else if cursor >= *scroll_offset + visible {
+        *scroll_offset = cursor + 1 - visible;
+    }
+    let offset = *scroll_offset;
+
+    let items: Vec<ListItem> = if runtime.browse_entries.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            "  (empty)",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+        )))]
+    } else {
+        runtime
+            .browse_entries
+            .iter()
+            .enumerate()
+            .skip(offset)
+            .take(visible)
+            .map(|(i, entry)| {
+                let is_cursor = i == cursor;
+                let label = if entry.is_dir {
+                    format!("{}/", entry.name)
+                } else {
+                    entry.name.clone()
+                };
+                let style = if is_cursor {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else if entry.is_dir {
+                    Style::default().fg(Color::Cyan)
+                } else {
+                    Style::default().fg(Color::Gray)
+                };
+                ListItem::new(Line::from(Span::styled(format!(" {label}"), style)))
+            })
+            .collect()
+    };
+
+    f.render_widget(Clear, popup);
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(title)
+            .border_style(Style::default().fg(Color::Yellow)),
+    );
+    f.render_widget(list, popup);
 }
 
 fn format_time(ms: u64) -> String {
@@ -1000,6 +1079,37 @@ mod tests {
                 "expected help overlay to mention {needle:?} on an 80x24 terminal, got:\n{text}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn browse_overlay_shows_current_dir_and_highlights_cursor_entry() {
+        let mut runtime = bare_test_runtime("browse_render").await;
+        let dir = &runtime.paths.data_dir.clone();
+        std::fs::write(dir.join("alpha.mp3"), b"").unwrap();
+        std::fs::write(dir.join("beta.mp3"), b"").unwrap();
+        runtime.last_browse_dir = Some(dir.clone());
+        runtime.handle(Command::RequestAddFolder).await.unwrap();
+        // Note: `bare_test_runtime` nests `log_dir` under `data_dir`, so
+        // `browse_entries` is actually [logs/, alpha.mp3, beta.mp3] (dirs
+        // sort first) and this second cursor step lands on alpha.mp3, not
+        // beta.mp3 as the name suggests. Left as-is (matches the task
+        // brief's test verbatim) since the assertions below don't depend
+        // on which entry the cursor highlights — only that both filenames
+        // are rendered.
+        runtime.handle(Command::BrowseDown).await.unwrap();
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut scroll = 0usize;
+        terminal
+            .draw(|f| draw_browse_overlay(f, f.area(), &runtime, &mut scroll))
+            .unwrap();
+        let text = buffer_text(&terminal.backend().buffer().clone());
+
+        assert!(text.contains("alpha.mp3"), "expected both entries listed:\n{text}");
+        assert!(text.contains("beta.mp3"), "expected both entries listed:\n{text}");
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
