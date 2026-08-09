@@ -70,7 +70,9 @@ async fn ui_loop(
 
         // Precompute the same layout as the draw pass so the visualizer canvas
         // matches the block's *inner* rect exactly (avoids Paragraph wrap shifts
-        // that make the geometric center appear to bounce).
+        // that make the geometric center appear to bounce). Sharing
+        // main_layout() (rather than two separately-written Layout::split
+        // calls) is what keeps this guarantee true after edits.
         let layout_root = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -80,45 +82,49 @@ async fn ui_loop(
                 Constraint::Length(2),
             ])
             .split(area);
-        let layout_main = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(layout_root[1]);
-        let viz_panel = layout_main[1];
-        let viz_w = viz_panel.width.saturating_sub(2).max(1); // borders
-        let viz_h = viz_panel.height.saturating_sub(2).max(1);
-        let frame_in = VisualizerFrameInput {
-            frame_index: 0,
-            width: viz_w,
-            height: viz_h,
-            status: snap.status.clone(),
-            position_s: snap.position_ms as f64 / 1000.0,
-            duration_s: if snap.duration_ms > 0 {
-                Some(snap.duration_ms as f64 / 1000.0)
-            } else {
-                None
-            },
-            volume: f64::from(snap.volume) / 100.0,
-            speed: snap.speed,
-            title: snap.title.clone(),
-            track_path: snap.track_path.clone(),
-            level_left: snap.level_left,
-            level_right: snap.level_right,
-            level_source: snap.level_source.clone(),
-            spectrum_bands: snap.spectrum_bands.clone(),
-            spectrum_source: snap.spectrum_source.clone(),
-            beat_strength: snap.beat_strength,
-            beat_is_onset: snap.beat_is_onset,
-            beat_bpm: snap.beat_bpm,
-            beat_source: snap.beat_source.clone(),
-            waveform_min_left: snap.waveform_min_left,
-            waveform_max_left: snap.waveform_max_left,
-            waveform_min_right: snap.waveform_min_right,
-            waveform_max_right: snap.waveform_max_right,
-            waveform_source: snap.waveform_source.clone(),
-            waveform_history: snap.waveform_history.clone(),
+        let (_, viz_panel) = main_layout(layout_root[1], runtime.visualizer_hidden);
+        // Frozen (not ticking) while hidden: skipping render() avoids
+        // spending CPU animating something invisible, and since the host
+        // itself isn't torn down, showing it again resumes instantly rather
+        // than restarting from scratch.
+        let viz_lines = if let Some(viz_panel) = viz_panel {
+            let viz_w = viz_panel.width.saturating_sub(2).max(1); // borders
+            let viz_h = viz_panel.height.saturating_sub(2).max(1);
+            let frame_in = VisualizerFrameInput {
+                frame_index: 0,
+                width: viz_w,
+                height: viz_h,
+                status: snap.status.clone(),
+                position_s: snap.position_ms as f64 / 1000.0,
+                duration_s: if snap.duration_ms > 0 {
+                    Some(snap.duration_ms as f64 / 1000.0)
+                } else {
+                    None
+                },
+                volume: f64::from(snap.volume) / 100.0,
+                speed: snap.speed,
+                title: snap.title.clone(),
+                track_path: snap.track_path.clone(),
+                level_left: snap.level_left,
+                level_right: snap.level_right,
+                level_source: snap.level_source.clone(),
+                spectrum_bands: snap.spectrum_bands.clone(),
+                spectrum_source: snap.spectrum_source.clone(),
+                beat_strength: snap.beat_strength,
+                beat_is_onset: snap.beat_is_onset,
+                beat_bpm: snap.beat_bpm,
+                beat_source: snap.beat_source.clone(),
+                waveform_min_left: snap.waveform_min_left,
+                waveform_max_left: snap.waveform_max_left,
+                waveform_min_right: snap.waveform_min_right,
+                waveform_max_right: snap.waveform_max_right,
+                waveform_source: snap.waveform_source.clone(),
+                waveform_history: snap.waveform_history.clone(),
+            };
+            viz.render(frame_in)
+        } else {
+            Vec::new()
         };
-        let viz_lines = viz.render(frame_in);
 
         terminal
             .draw(|f| {
@@ -132,18 +138,12 @@ async fn ui_loop(
                     ])
                     .split(f.area());
 
-                let main = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints([
-                        Constraint::Percentage(50), // playlist
-                        Constraint::Percentage(50), // visualizer
-                    ])
-                    .split(root[1]);
+                let (playlist_area, viz_area) = main_layout(root[1], runtime.visualizer_hidden);
 
                 draw_header(f, root[0], &snap, viz.active_name());
                 draw_playlist(
                     f,
-                    main[0],
+                    playlist_area,
                     &rows,
                     PlaylistView {
                         cursor_index: runtime.cursor_index,
@@ -153,7 +153,9 @@ async fn ui_loop(
                         playing_item_id: snap.item_id,
                     },
                 );
-                draw_visualizer(f, main[1], &viz_lines, viz.active_name());
+                if let Some(viz_area) = viz_area {
+                    draw_visualizer(f, viz_area, &viz_lines, viz.active_name());
+                }
                 draw_transport(f, root[2], &snap);
                 draw_footer(
                     f,
@@ -186,6 +188,21 @@ async fn ui_loop(
         }
     }
     Ok(())
+}
+
+/// Split the main row into (playlist, visualizer) areas. Returns `None` for
+/// the visualizer half when hidden, instead of a zero-width `Rect` — that
+/// makes "there's nothing to draw" a compile-time-checked case at call
+/// sites rather than an index that happens to be out of bounds.
+fn main_layout(area: Rect, visualizer_hidden: bool) -> (Rect, Option<Rect>) {
+    if visualizer_hidden {
+        return (area, None);
+    }
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(area);
+    (cols[0], Some(cols[1]))
 }
 
 fn draw_header(
@@ -413,7 +430,7 @@ fn draw_footer(
     } else if input_mode == "help" {
         "Esc / q / any key — close help".into()
     } else {
-        "↑/↓ Space n/p x ←/→ -/+ [] r/s f a d c m z i g  ?=help  q quit".into()
+        "↑/↓ Space n/p x ←/→ -/+ [] r/s f a d c m z i g  Z=hide-viz  ?=help  q quit".into()
     };
     let (line, style) = if input_mode == "help" {
         (
@@ -526,6 +543,7 @@ fn help_lines() -> Vec<Line<'static>> {
         e2("f", "Find", "Shift+U/D", "Reorder up/down"),
         section("View"),
         e2("z", "Cycle visualizer", "i", "About / version"),
+        e1("Shift+Z", "Hide/show visualizer pane"),
         Line::from(Span::styled(
             "Esc / q / any key - close",
             Style::default()
@@ -569,6 +587,15 @@ fn progress_bar(pos: u64, dur: u64, width: usize) -> String {
     }
     bar.push(']');
     bar
+}
+
+fn toggle_visualizer_hidden(runtime: &mut AppRuntime) {
+    runtime.visualizer_hidden = !runtime.visualizer_hidden;
+    runtime.set_status(if runtime.visualizer_hidden {
+        "Visualizer hidden — playlist maximized"
+    } else {
+        "Visualizer shown"
+    });
 }
 
 async fn handle_key(
@@ -671,6 +698,12 @@ async fn handle_key(
         KeyCode::Char('a') => {
             let _ = runtime.handle(Command::RequestAddPath).await;
         }
+        // Shift+Z toggles pane visibility; must sit above the plain 'z'
+        // cycle arm. Terminals vary on whether a shifted letter arrives as
+        // a bare uppercase char or as Char('z') + the SHIFT modifier, so
+        // both are handled.
+        KeyCode::Char('Z') => toggle_visualizer_hidden(runtime),
+        KeyCode::Char('z') if shift => toggle_visualizer_hidden(runtime),
         KeyCode::Char('z') => {
             let id = viz.cycle();
             runtime.set_visualizer_id(id);
@@ -806,6 +839,29 @@ mod tests {
     use ratatui::buffer::Buffer;
     use std::path::PathBuf;
 
+    #[test]
+    fn main_layout_gives_playlist_the_full_width_when_visualizer_is_hidden() {
+        let area = Rect::new(0, 0, 100, 30);
+
+        let (playlist, viz) = main_layout(area, true);
+
+        assert_eq!(playlist, area);
+        assert_eq!(viz, None, "no visualizer rect should be produced at all");
+    }
+
+    #[test]
+    fn main_layout_splits_evenly_when_visualizer_is_visible() {
+        let area = Rect::new(0, 0, 100, 30);
+
+        let (playlist, viz) = main_layout(area, false);
+        let viz = viz.expect("visualizer rect expected when not hidden");
+
+        assert_eq!(playlist.width + viz.width, area.width);
+        assert_eq!(playlist.height, area.height);
+        assert_eq!(viz.height, area.height);
+        assert!(viz.x >= playlist.x + playlist.width);
+    }
+
     fn row(item_id: i64, title: &str) -> tz_db::PlaylistRow {
         tz_db::PlaylistRow {
             item_id,
@@ -929,6 +985,7 @@ mod tests {
             "Reorder",
             "Cycle visualizer",
             "About",
+            "Hide/show visualizer",
             "Esc / q / any key",
         ] {
             assert!(
@@ -949,22 +1006,18 @@ mod tests {
         assert_ne!(active.fg, inactive.fg);
     }
 
-    async fn find_test_runtime(name: &str) -> AppRuntime {
+    /// A real `AppRuntime` (Fake backend, temp on-disk DB) with no tracks —
+    /// for tests that only care about UI-dispatch state, not playlist
+    /// contents.
+    async fn bare_test_runtime(name: &str) -> AppRuntime {
         let dir = std::env::temp_dir().join(format!(
-            "tz_tui_find_{name}_{}",
+            "tz_tui_{name}_{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        // Distinct filename substrings, no metadata upsert needed — mirrors
-        // tz-db's search_by_path_and_metadata fixture, which is what proves
-        // add_tracks alone populates the search index (FTS-or-LIKE) that
-        // search_item_ids reads from.
-        for name in ["alpha_song.mp3", "beta_song.mp3", "alphabet.mp3"] {
-            std::fs::write(dir.join(name), b"").unwrap();
-        }
         let paths = tz_core::AppPaths {
             data_dir: dir.clone(),
             config_dir: dir.clone(),
@@ -972,13 +1025,23 @@ mod tests {
             state_file: dir.join("state.json"),
             db_file: dir.join("db.sqlite3"),
         };
-        let runtime = tz_core::open_runtime(paths, Some(tz_playback::BackendKind::Fake))
+        tz_core::open_runtime(paths, Some(tz_playback::BackendKind::Fake))
             .await
-            .unwrap();
-        let dir_paths: Vec<PathBuf> = ["alpha_song.mp3", "beta_song.mp3", "alphabet.mp3"]
-            .iter()
-            .map(|n| dir.join(n))
-            .collect();
+            .unwrap()
+    }
+
+    async fn find_test_runtime(name: &str) -> AppRuntime {
+        let runtime = bare_test_runtime(name).await;
+        let dir = &runtime.paths.data_dir;
+        // Distinct filename substrings, no metadata upsert needed — mirrors
+        // tz-db's search_by_path_and_metadata fixture, which is what proves
+        // add_tracks alone populates the search index (FTS-or-LIKE) that
+        // search_item_ids reads from.
+        let names = ["alpha_song.mp3", "beta_song.mp3", "alphabet.mp3"];
+        for name in names {
+            std::fs::write(dir.join(name), b"").unwrap();
+        }
+        let dir_paths: Vec<PathBuf> = names.iter().map(|n| dir.join(n)).collect();
         runtime
             .store
             .add_tracks(runtime.playlist_id, &dir_paths)
@@ -1035,6 +1098,51 @@ mod tests {
             3,
             "expected backspacing back to an empty query to restore the full playlist"
         );
+
+        let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
+    }
+
+    #[tokio::test]
+    async fn shift_z_toggles_visualizer_hidden() {
+        let mut runtime = bare_test_runtime("viz_toggle").await;
+        let mut viz = VisualizerHost::new(false);
+        assert!(!runtime.visualizer_hidden);
+
+        // Terminals vary on whether a shifted letter arrives as a bare
+        // uppercase char or as Char('z') + SHIFT — cover both.
+        handle_key(&mut runtime, &mut viz, KeyCode::Char('Z'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert!(runtime.visualizer_hidden);
+
+        handle_key(
+            &mut runtime,
+            &mut viz,
+            KeyCode::Char('z'),
+            KeyModifiers::SHIFT,
+        )
+        .await
+        .unwrap();
+        assert!(!runtime.visualizer_hidden);
+
+        let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
+    }
+
+    #[tokio::test]
+    async fn plain_z_still_cycles_visualizer_and_leaves_the_pane_visible() {
+        // Regression guard for arm ordering: the new shift-guarded arms sit
+        // right above the plain 'z' cycle arm in the match — make sure they
+        // don't swallow it.
+        let mut runtime = bare_test_runtime("viz_cycle").await;
+        let mut viz = VisualizerHost::new(false);
+        let before = viz.active_id();
+
+        handle_key(&mut runtime, &mut viz, KeyCode::Char('z'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+
+        assert_ne!(viz.active_id(), before);
+        assert!(!runtime.visualizer_hidden);
 
         let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
     }

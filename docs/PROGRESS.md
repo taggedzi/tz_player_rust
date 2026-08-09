@@ -37,6 +37,7 @@ cargo run -p tz-player -- doctor
 | `a` | Add path (type file/folder, Enter) |
 | `c` then `y`/`n` | Clear playlist confirm |
 | `z` | Cycle visualizers |
+| `Shift+Z` | Hide/show visualizer pane |
 | `g` | Locate now-playing track |
 | `i` | About / version info |
 | `?` | Help (full-screen key reference) |

@@ -62,6 +62,7 @@ cargo build --release -p tz-player
 | c | Clear playlist |
 | m | Refresh metadata |
 | z | Cycle visualizers (26 built-ins) |
+| Shift+Z | Hide/show visualizer pane (playlist fills the width) |
 | g | Locate now-playing track |
 | i | About / version info |
 | ? | Help (full-screen key reference) |

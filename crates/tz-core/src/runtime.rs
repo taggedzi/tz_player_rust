@@ -49,6 +49,9 @@ pub struct AppRuntime {
     pub input_mode: String,
     pub input_buffer: String,
     pub visualizer_id: String,
+    /// Collapses the visualizer pane (playlist takes the full width) when
+    /// true. Session-only — not persisted to `AppState`.
+    pub visualizer_hidden: bool,
     /// Fallback notice when VLC could not start.
     pub backend_fallback_notice: Option<String>,
     last_level: Option<(f32, f32, String)>,
@@ -145,6 +148,7 @@ pub async fn open_runtime(
         input_mode: "normal".into(),
         input_buffer: String::new(),
         visualizer_id,
+        visualizer_hidden: false,
         backend_fallback_notice,
         last_level: None,
         last_spectrum: None,
