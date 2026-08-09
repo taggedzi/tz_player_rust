@@ -388,18 +388,14 @@ impl AppRuntime {
                     self.report_player_error(e);
                 }
             }
-            Command::Next => {
-                match self.player.next().await {
-                    Ok(()) => self.schedule_analysis_for_current().await,
-                    Err(e) => self.report_player_error(e),
-                }
-            }
-            Command::Previous => {
-                match self.player.previous().await {
-                    Ok(()) => self.schedule_analysis_for_current().await,
-                    Err(e) => self.report_player_error(e),
-                }
-            }
+            Command::Next => match self.player.next().await {
+                Ok(()) => self.schedule_analysis_for_current().await,
+                Err(e) => self.report_player_error(e),
+            },
+            Command::Previous => match self.player.previous().await {
+                Ok(()) => self.schedule_analysis_for_current().await,
+                Err(e) => self.report_player_error(e),
+            },
             Command::Seek { position_ms } => {
                 if let Err(e) = self.player.seek_ms(position_ms).await {
                     self.report_player_error(e);
@@ -713,6 +709,80 @@ impl AppRuntime {
     }
 }
 
+/// One entry in a directory listing shown by the folder-browser modal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FsEntry {
+    pub name: String,
+    pub path: PathBuf,
+    pub is_dir: bool,
+}
+
+/// List `dir`'s contents for the folder-browser modal: every subdirectory,
+/// plus files recognized by `is_media_extension` (non-media clutter stays
+/// out of the pane). Directories sort first, then alphabetically
+/// (case-insensitive) within each group. An unreadable or missing
+/// directory yields an empty list rather than erroring — callers fall back
+/// to the previous, still-valid directory.
+pub fn list_dir(dir: &Path) -> Vec<FsEntry> {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+    for ent in rd.flatten() {
+        let path = ent.path();
+        let name = ent.file_name().to_string_lossy().into_owned();
+        if path.is_dir() {
+            dirs.push(FsEntry {
+                name,
+                path,
+                is_dir: true,
+            });
+        } else if path.is_file() && is_media_extension(&path) {
+            files.push(FsEntry {
+                name,
+                path,
+                is_dir: false,
+            });
+        }
+    }
+    let by_name_ci = |a: &FsEntry, b: &FsEntry| {
+        a.name
+            .to_ascii_lowercase()
+            .cmp(&b.name.to_ascii_lowercase())
+    };
+    dirs.sort_by(by_name_ci);
+    files.sort_by(by_name_ci);
+    dirs.extend(files);
+    dirs
+}
+
+/// Windows drive letters currently mounted, as synthetic browse entries
+/// (e.g. `C:\`). Reached only by going "up" from a drive root — no single
+/// filesystem parent spans drives. Always empty on non-Windows targets,
+/// where `/` has no such concept.
+#[cfg(windows)]
+pub fn drive_list() -> Vec<FsEntry> {
+    let mut out = Vec::new();
+    for letter in b'A'..=b'Z' {
+        let root = format!("{}:\\", letter as char);
+        let path = PathBuf::from(&root);
+        if std::fs::metadata(&path).is_ok() {
+            out.push(FsEntry {
+                name: root,
+                path,
+                is_dir: true,
+            });
+        }
+    }
+    out
+}
+
+#[cfg(not(windows))]
+pub fn drive_list() -> Vec<FsEntry> {
+    Vec::new()
+}
+
 fn expand_media_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for p in paths {
@@ -884,9 +954,9 @@ mod tests {
         runtime.report_player_error(PlayerError::Db("row missing".into()));
         assert_eq!(runtime.status_level, StatusLevel::Warn);
 
-        runtime.report_player_error(PlayerError::Playback(
-            tz_playback::PlaybackError::message("VLC crashed"),
-        ));
+        runtime.report_player_error(PlayerError::Playback(tz_playback::PlaybackError::message(
+            "VLC crashed",
+        )));
         assert_eq!(runtime.status_level, StatusLevel::Error);
 
         let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
@@ -914,11 +984,11 @@ mod tests {
                 p
             })
             .collect();
-        runtime.store.add_tracks(runtime.playlist_id, &paths).unwrap();
         runtime
             .store
-            .list_item_ids(runtime.playlist_id)
-            .unwrap()
+            .add_tracks(runtime.playlist_id, &paths)
+            .unwrap();
+        runtime.store.list_item_ids(runtime.playlist_id).unwrap()
     }
 
     #[tokio::test]
@@ -986,5 +1056,44 @@ mod tests {
 
         assert_eq!(runtime.cursor_index, 1);
         let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
+    }
+
+    #[test]
+    fn list_dir_sorts_directories_before_files_case_insensitively() {
+        let dir = temp_dir("list_sort");
+        std::fs::write(dir.join("zebra.mp3"), b"").unwrap();
+        std::fs::write(dir.join("Alpha.mp3"), b"").unwrap();
+        std::fs::create_dir_all(dir.join("Zeta")).unwrap();
+        std::fs::create_dir_all(dir.join("beta")).unwrap();
+
+        let entries = list_dir(&dir);
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+
+        assert_eq!(names, vec!["beta", "Zeta", "Alpha.mp3", "zebra.mp3"]);
+        assert!(entries[0].is_dir && entries[1].is_dir);
+        assert!(!entries[2].is_dir && !entries[3].is_dir);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_dir_filters_out_non_media_files() {
+        let dir = temp_dir("list_filter");
+        std::fs::write(dir.join("song.mp3"), b"").unwrap();
+        std::fs::write(dir.join("cover.jpg"), b"").unwrap();
+        std::fs::write(dir.join("readme.txt"), b"").unwrap();
+
+        let entries = list_dir(&dir);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "song.mp3");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_dir_on_unreadable_or_missing_path_returns_empty() {
+        let missing = std::env::temp_dir().join("tz_runtime_does_not_exist_12345");
+        assert!(list_dir(&missing).is_empty());
     }
 }
