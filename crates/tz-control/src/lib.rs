@@ -46,8 +46,19 @@ pub enum Command {
     AddPaths {
         paths: Vec<String>,
     },
-    /// Prompt/path for interactive add (TUI fills path string).
-    RequestAddPath,
+    /// Open the folder-browser modal (TUI fills its own navigation state).
+    RequestAddFolder,
+    /// Move the browser cursor up/down within the current directory listing.
+    BrowseUp,
+    BrowseDown,
+    /// Descend into the highlighted directory, or add-and-close on a file.
+    BrowseEnter,
+    /// Add the highlighted file/folder (recursively, for a folder) and close.
+    BrowseSelect,
+    /// Go up one directory level (or to the drive list, at a drive root).
+    BrowseParent,
+    /// Close the browser without adding anything.
+    BrowseCancel,
     RemoveSelected,
     ClearPlaylist,
     /// Confirm pending clear when TUI shows a confirm dialog.
@@ -131,5 +142,24 @@ mod tests {
         let back: Command = serde_json::from_str(&json).unwrap();
         assert_eq!(cmd, back);
         assert!(json.contains("set_volume"));
+    }
+
+    #[test]
+    fn browse_commands_json_round_trip() {
+        for cmd in [
+            Command::RequestAddFolder,
+            Command::BrowseUp,
+            Command::BrowseDown,
+            Command::BrowseEnter,
+            Command::BrowseSelect,
+            Command::BrowseParent,
+            Command::BrowseCancel,
+        ] {
+            let json = serde_json::to_string(&cmd).unwrap();
+            let back: Command = serde_json::from_str(&json).unwrap();
+            assert_eq!(cmd, back);
+        }
+        let json = serde_json::to_string(&Command::RequestAddFolder).unwrap();
+        assert!(json.contains("request_add_folder"));
     }
 }
