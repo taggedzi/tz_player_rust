@@ -9,6 +9,7 @@ use super::host::{heat_color, VisualizerFrameInput};
 pub struct Cell {
     pub ch: char,
     pub fg: Color,
+    pub bg: Color,
 }
 
 impl Default for Cell {
@@ -16,6 +17,7 @@ impl Default for Cell {
         Self {
             ch: ' ',
             fg: Color::Reset,
+            bg: Color::Reset,
         }
     }
 }
@@ -61,6 +63,24 @@ impl Canvas {
             self.cells[y * self.width + x] = Cell {
                 ch: ascii_cell(ch),
                 fg,
+                bg: Color::Reset,
+            };
+        }
+    }
+
+    /// Paint a cell with both foreground and background color. Most particle
+    /// visualizers only need `set`; block-map visualizers use this for actual
+    /// terminal tiles instead of approximating them with dense glyphs.
+    pub fn set_styled(&mut self, x: i32, y: i32, ch: char, fg: Color, bg: Color) {
+        if x < 0 || y < 0 {
+            return;
+        }
+        let (x, y) = (x as usize, y as usize);
+        if x < self.width && y < self.height {
+            self.cells[y * self.width + x] = Cell {
+                ch: ascii_cell(ch),
+                fg,
+                bg,
             };
         }
     }
@@ -76,6 +96,7 @@ impl Canvas {
                 self.cells[i] = Cell {
                     ch: ascii_cell(ch),
                     fg,
+                    bg: Color::Reset,
                 };
             }
         }
@@ -87,10 +108,13 @@ impl Canvas {
             let mut spans = Vec::with_capacity(self.width);
             for x in 0..self.width {
                 let c = self.cells[y * self.width + x];
-                if c.ch == ' ' {
+                if c.ch == ' ' && c.bg == Color::Reset {
                     spans.push(Span::raw(" "));
                 } else {
-                    spans.push(Span::styled(c.ch.to_string(), Style::default().fg(c.fg)));
+                    spans.push(Span::styled(
+                        c.ch.to_string(),
+                        Style::default().fg(c.fg).bg(c.bg),
+                    ));
                 }
             }
             lines.push(Line::from(spans));

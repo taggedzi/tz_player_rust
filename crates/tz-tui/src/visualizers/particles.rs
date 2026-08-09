@@ -269,20 +269,22 @@ fn render_particles(
             }
         }
         ParticleStyle::DataCore => {
-            // Cyberpunk defrag: fragmented sector blocks that migrate into sorted lanes.
+            // Old-school defrag: fragmented audio clusters migrate into packed lanes.
             render_data_core(
                 &mut canvas,
                 width,
                 rows,
                 seed,
                 t,
+                frame.position_s,
+                frame.duration_s,
+                bands,
                 mono,
                 bass,
                 mid,
+                high,
                 onset,
                 color,
-                cx,
-                cy,
             );
         }
         ParticleStyle::Plasma => {
@@ -936,146 +938,443 @@ fn render_data_core(
     rows: usize,
     seed: u64,
     t: f32,
+    position_s: f64,
+    duration_s: Option<f64>,
+    bands: Option<&[u8]>,
     mono: f32,
     bass: f32,
     mid: f32,
+    high: f32,
     onset: bool,
     color: bool,
-    cx: f32,
-    cy: f32,
 ) {
-    // Sector grid: each row is a "track" being defragged.
-    let sectors = (width / 4).clamp(6, 24);
-    let tracks = rows.saturating_sub(1).max(3);
-    let progress = (0.15 + mono * 0.55 + bass * 0.25).clamp(0.0, 0.95);
-    let head_track = ((t * (0.15 + mid * 0.25)) as usize) % tracks.max(1);
+    let progress = duration_s
+        .filter(|duration| *duration > 0.0)
+        .map(|duration| (position_s / duration).clamp(0.0, 1.0) as f32)
+        .unwrap_or_else(|| (t * 0.0025).fract());
+    let sidebar_w = if width >= 46 {
+        (width / 3).clamp(14, 18)
+    } else {
+        0
+    };
+    let grid_x = if sidebar_w > 0 { sidebar_w + 1 } else { 0 };
+    let grid_w = width.saturating_sub(grid_x).max(1);
+    let clusters = (grid_w / 2).max(1);
+    let grid_rows = rows.max(1);
+    // Deliberately sluggish seek cadence: roughly 0.5-2 cluster operations per
+    // second at the default 10 FPS, reminiscent of an old IDE drive. Music can
+    // hurry the head a little, but never turns it into a modern rapid scan.
+    let tick = (t * (0.05 + mid * 0.12 + mono * 0.04)).floor() as usize;
+    let head_row = tick % grid_rows;
+    let active_rows = 1 + (bass * 2.0).round() as usize + usize::from(onset);
+    let warm = bass - high > 0.10;
+    let cool = high - bass > 0.10;
+    let free_bg = if !color {
+        Color::Reset
+    } else if warm {
+        Color::Rgb(35, 10, 30)
+    } else if cool {
+        Color::Rgb(4, 24, 42)
+    } else {
+        Color::Rgb(10, 24, 34)
+    };
 
-    for ty in 0..tracks {
-        let done = ((sectors as f32) * progress
-            + unit_noise(seed, ty as u64) * 2.0
-            + if ty == head_track { 1.0 } else { 0.0 })
-        .round() as usize;
-        let done = done.min(sectors);
+    // Rows map across the live spectrum: blue bass, green mids, violet highs.
+    // Block brightness follows energy while state glyphs retain defrag meaning.
+    for row in 0..grid_rows {
+        let lane_energy = band_level(bands, row, grid_rows);
+        let zone = row * 3 / grid_rows.max(1);
+        let used_ratio = 0.50 + unit_noise(seed, row as u64 * 101 + 7) * 0.22;
+        let target_used = ((clusters as f32 * used_ratio).round() as usize).clamp(1, clusters);
+        let packed = ((target_used as f32 * progress).round() as usize).min(target_used);
+        let source_span = clusters.saturating_sub(packed).max(1);
+        let source = (packed + (tick + row * 7) % source_span).min(clusters - 1);
+        let working_row = (row + grid_rows - head_row) % grid_rows < active_rows;
 
-        for sx in 0..sectors {
-            let cell_w = (width / sectors).max(1);
-            let x0 = sx * cell_w;
-            // Fragments still "seeking": slide with time
-            let sorted = sx < done;
-            let frag_phase = if sorted {
-                0.0
-            } else {
-                let u = unit_noise(seed, (ty * 31 + sx) as u64);
-                ((t * (0.4 + u) + sx as f32 * 1.7 + ty as f32).sin() * 0.5 + 0.5)
-                    * (cell_w.saturating_sub(1) as f32)
-            };
-            let x = if sorted {
-                x0 as i32
-            } else {
-                // Scatter then drift toward home
-                let home = x0 as f32;
-                let scatter = unit_noise(seed, (sx * 17 + ty * 9) as u64) * width as f32;
-                let blend = ((t * 0.02 + sx as f32 * 0.05 + progress).sin() * 0.5 + 0.5)
-                    * (0.3 + progress * 0.7);
-                (scatter * (1.0 - blend) + home * blend + frag_phase * 0.2).round() as i32
-            };
+        for cluster in 0..clusters {
+            let salt = (row as u64) << 32 | cluster as u64;
+            let originally_used = unit_noise(seed, salt ^ 0x25b5_17d1) < used_ratio;
+            let move_at = unit_noise(seed, salt ^ 0x9e37_79b9);
+            let packed_block = cluster < packed;
+            let fragment = !packed_block && originally_used && move_at > progress;
+            let reading = working_row && cluster == source && progress < 0.999;
+            let writing = working_row
+                && cluster == packed.saturating_sub(1).min(clusters - 1)
+                && progress > 0.0
+                && progress < 0.999;
 
-            let n = mix_u64(seed, (ty as u64) << 16 | sx as u64);
-            let glyph = if sorted {
-                if onset && ty == head_track {
-                    '#'
-                } else {
-                    ['█', '▓', '▒', '░'][(n % 4) as usize]
-                }
-            } else {
-                b"0123456789ABCDEF"[((n >> 8) % 16) as usize] as char
-            };
-
-            let heat = if sorted {
-                0.35 + progress * 0.4 + if ty == head_track { 0.2 } else { 0.0 }
-            } else {
-                0.55 + mid * 0.3
-            };
-
-            let fg = if color {
-                if sorted {
-                    if ty == head_track {
-                        Color::Cyan
+            let (glyph, fg, bg) = if reading {
+                (
+                    'R',
+                    Color::White,
+                    if color {
+                        Color::Rgb(220, 45, 65)
                     } else {
-                        Color::Green
-                    }
-                } else if onset {
-                    Color::Yellow
-                } else {
-                    Color::Rgb(180, 80, 255)
-                }
+                        Color::Reset
+                    },
+                )
+            } else if writing {
+                (
+                    'W',
+                    if color { Color::Black } else { Color::White },
+                    if color {
+                        Color::Rgb(255, 220, 35)
+                    } else {
+                        Color::Reset
+                    },
+                )
+            } else if packed_block {
+                (
+                    '.',
+                    if color { Color::White } else { Color::Gray },
+                    defrag_block_color(zone, lane_energy, false, onset, color),
+                )
+            } else if fragment {
+                (
+                    'x',
+                    if color { Color::White } else { Color::Gray },
+                    defrag_block_color(zone, lane_energy, true, false, color),
+                )
             } else {
-                energy_color(heat.clamp(0.0, 1.0), false)
+                (if color { ' ' } else { '.' }, Color::DarkGray, free_bg)
             };
 
-            canvas.set(
-                x.clamp(0, width.saturating_sub(1) as i32),
-                ty as i32,
-                glyph,
-                fg,
-            );
-            // Fill rest of sorted sector solidly
-            if sorted && cell_w > 1 {
-                for dx in 1..cell_w {
-                    if x0 + dx < width {
-                        canvas.set(
-                            (x0 + dx) as i32,
-                            ty as i32,
-                            if dx + 1 == cell_w { '|' } else { glyph },
-                            fg,
-                        );
-                    }
+            for dx in 0..2 {
+                let x = grid_x + cluster * 2 + dx;
+                if x < width {
+                    canvas.set_styled(
+                        x as i32,
+                        row as i32,
+                        if dx == 0 { glyph } else { ' ' },
+                        fg,
+                        bg,
+                    );
                 }
             }
         }
     }
 
-    // Read/write head indicator
-    let head_x = ((progress * (width.saturating_sub(1) as f32))
-        + (t * 2.0 + bass * 5.0).sin() * 2.0)
-        .round() as i32;
-    canvas.set(
-        head_x.clamp(0, width.saturating_sub(1) as i32),
-        head_track as i32,
-        if onset { '@' } else { '>' },
-        if color { Color::White } else { Color::Gray },
-    );
+    if sidebar_w > 0 {
+        render_defrag_sidebar(
+            canvas, sidebar_w, rows, progress, bass, mid, high, onset, warm, cool, color,
+        );
+    }
+}
 
-    // Core checksum block at center (overdrawn lightly)
-    let label = format!(
-        "{:04X}",
-        (seed as u32 ^ (t as u32).wrapping_mul(13)) & 0xFFFF
-    );
-    let lx = (cx as i32) - (label.len() as i32 / 2);
-    let ly = cy.round() as i32;
-    if ly >= 0 && (ly as usize) < rows {
-        for (i, ch) in label.chars().enumerate() {
-            canvas.set(
-                lx + i as i32,
-                ly,
-                ch,
-                if color { Color::Yellow } else { Color::White },
+fn defrag_block_color(
+    zone: usize,
+    energy: f32,
+    fragmented: bool,
+    onset: bool,
+    color: bool,
+) -> Color {
+    if !color {
+        return Color::Reset;
+    }
+    let mut light = (0.35 + energy * 0.65 + if onset { 0.16 } else { 0.0 }).min(1.0);
+    if fragmented {
+        light *= 0.62;
+    }
+    match zone {
+        0 => Color::Rgb(
+            (18.0 + light * 45.0) as u8,
+            (55.0 + light * 100.0) as u8,
+            (105.0 + light * 150.0).min(255.0) as u8,
+        ),
+        1 => Color::Rgb(
+            (12.0 + light * 35.0) as u8,
+            (75.0 + light * 150.0).min(255.0) as u8,
+            (60.0 + light * 105.0) as u8,
+        ),
+        _ => Color::Rgb(
+            (90.0 + light * 150.0).min(255.0) as u8,
+            (28.0 + light * 70.0) as u8,
+            (105.0 + light * 140.0).min(255.0) as u8,
+        ),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_defrag_sidebar(
+    canvas: &mut Canvas,
+    width: usize,
+    rows: usize,
+    progress: f32,
+    bass: f32,
+    mid: f32,
+    high: f32,
+    onset: bool,
+    warm: bool,
+    cool: bool,
+    color: bool,
+) {
+    let border = if color {
+        Color::Rgb(90, 155, 255)
+    } else {
+        Color::Gray
+    };
+    let text = if color {
+        Color::Rgb(205, 225, 255)
+    } else {
+        Color::Gray
+    };
+    let accent = if color { Color::Yellow } else { Color::White };
+
+    let legend_h = rows.min(9);
+    draw_defrag_box(canvas, 0, 0, width, legend_h, "LEGEND", border);
+    for (y, label) in [
+        (2, ". PACKED"),
+        (3, "x FRAGMENT"),
+        (4, "R READING"),
+        (5, "W WRITING"),
+        (6, "  FREE"),
+        (7, "B/M/H COLOR"),
+    ] {
+        if y + 1 < legend_h {
+            put_canvas_text(canvas, 2, y, label, text, width.saturating_sub(3));
+        }
+    }
+    if legend_h >= 8 {
+        let swatches = [
+            (
+                2,
+                2,
+                '.',
+                Color::White,
+                defrag_block_color(1, 0.7, false, false, color),
+            ),
+            (
+                2,
+                3,
+                'x',
+                Color::White,
+                defrag_block_color(2, 0.7, true, false, color),
+            ),
+            (
+                2,
+                4,
+                'R',
+                Color::White,
+                if color {
+                    Color::Rgb(220, 45, 65)
+                } else {
+                    Color::Reset
+                },
+            ),
+            (
+                2,
+                5,
+                'W',
+                if color { Color::Black } else { Color::White },
+                if color {
+                    Color::Rgb(255, 220, 35)
+                } else {
+                    Color::Reset
+                },
+            ),
+        ];
+        for (x, y, glyph, fg, bg) in swatches {
+            canvas.set_styled(x, y, glyph, fg, bg);
+            canvas.set_styled(x + 1, y, ' ', fg, bg);
+        }
+        for (x, zone, glyph) in [(2, 0, 'B'), (4, 1, 'M'), (6, 2, 'H')] {
+            canvas.set_styled(
+                x,
+                7,
+                glyph,
+                Color::White,
+                defrag_block_color(zone, 0.7, false, false, color),
             );
         }
     }
 
-    // Status strip
-    if rows > 0 {
-        let pct = (progress * 100.0).round() as i32;
-        let status = format!("DEFRAG {pct:3}%  SEC {sectors}  TRK {tracks}");
-        for (i, ch) in status.chars().take(width).enumerate() {
-            canvas.set(
-                i as i32,
-                (rows - 1) as i32,
-                ch,
-                if color { Color::DarkGray } else { Color::Gray },
+    if rows > 10 {
+        let y = 9;
+        let height = (rows - y).min(5);
+        draw_defrag_box(canvas, 0, y, width, height, "PROGRESS", border);
+        if height >= 3 {
+            put_canvas_text(
+                canvas,
+                2,
+                y + 2,
+                &format!("{:3}%", (progress * 100.0).round() as i32),
+                accent,
+                width.saturating_sub(3),
+            );
+            let bar_x = 7.min(width.saturating_sub(2));
+            let bar_w = width.saturating_sub(bar_x + 1);
+            let fill = (bar_w as f32 * progress).round() as usize;
+            for x in 0..bar_w {
+                canvas.set(
+                    (bar_x + x) as i32,
+                    (y + 2) as i32,
+                    if x < fill { '#' } else { '-' },
+                    if x < fill { accent } else { Color::DarkGray },
+                );
+            }
+        }
+    }
+
+    if rows > 15 {
+        let y = 14;
+        let height = rows - y;
+        draw_defrag_box(canvas, 0, y, width, height, "DISK STATUS", border);
+        let tone = if warm {
+            "WARM"
+        } else if cool {
+            "COOL"
+        } else {
+            "BALANCED"
+        };
+        for (dy, value, fg) in [
+            (
+                2,
+                if progress >= 0.999 {
+                    "COMPLETE"
+                } else {
+                    "ACTIVE"
+                },
+                accent,
+            ),
+            (3, tone, text),
+            (
+                4,
+                if onset { "BEAT HIT" } else { "BEAT SCAN" },
+                if onset { accent } else { text },
+            ),
+        ] {
+            if dy + 1 < height {
+                put_canvas_text(canvas, 2, y + dy, value, fg, width.saturating_sub(3));
+            }
+        }
+        if height >= 7 {
+            put_canvas_text(
+                canvas,
+                2,
+                y + 5,
+                &format!(
+                    "B{:02} M{:02} H{:02}",
+                    (bass * 99.0) as u8,
+                    (mid * 99.0) as u8,
+                    (high * 99.0) as u8
+                ),
+                text,
+                width.saturating_sub(3),
             );
         }
+    }
+}
+
+fn draw_defrag_box(
+    canvas: &mut Canvas,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    title: &str,
+    color: Color,
+) {
+    if width < 2 || height < 2 {
+        return;
+    }
+    for dx in 0..width {
+        canvas.set((x + dx) as i32, y as i32, '-', color);
+        canvas.set((x + dx) as i32, (y + height - 1) as i32, '-', color);
+    }
+    for dy in 0..height {
+        canvas.set(x as i32, (y + dy) as i32, '|', color);
+        canvas.set((x + width - 1) as i32, (y + dy) as i32, '|', color);
+    }
+    for (px, py) in [
+        (x, y),
+        (x + width - 1, y),
+        (x, y + height - 1),
+        (x + width - 1, y + height - 1),
+    ] {
+        canvas.set(px as i32, py as i32, '+', color);
+    }
+    if width > 4 {
+        put_canvas_text(
+            canvas,
+            x + 2,
+            y,
+            &format!(" {title} "),
+            color,
+            width.saturating_sub(4),
+        );
+    }
+}
+
+fn put_canvas_text(
+    canvas: &mut Canvas,
+    x: usize,
+    y: usize,
+    value: &str,
+    color: Color,
+    max_width: usize,
+) {
+    for (offset, ch) in value.chars().take(max_width).enumerate() {
+        canvas.set((x + offset) as i32, y as i32, ch, color);
+    }
+}
+
+#[cfg(test)]
+mod data_core_tests {
+    use super::*;
+
+    fn render_at(position_s: f64, duration_s: f64) -> Vec<Line<'static>> {
+        let mut canvas = Canvas::new(60, 19);
+        let bands = vec![128; 48];
+        render_data_core(
+            &mut canvas,
+            60,
+            19,
+            0x1234,
+            20.0,
+            position_s,
+            Some(duration_s),
+            Some(&bands),
+            0.5,
+            0.4,
+            0.5,
+            0.6,
+            false,
+            true,
+        );
+        canvas.into_lines()
+    }
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    fn grid_text(lines: &[Line<'_>]) -> String {
+        lines
+            .iter()
+            .flat_map(|line| line.spans.iter().skip(19))
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn progress_follows_track_position_and_duration() {
+        let lines = render_at(60.0, 120.0);
+        assert!(line_text(&lines[11]).contains("50%"));
+    }
+
+    #[test]
+    fn active_pass_reads_and_writes_until_the_map_is_complete() {
+        let active = grid_text(&render_at(60.0, 120.0));
+        assert!(active.contains('R'));
+        assert!(active.contains('W'));
+
+        let complete = grid_text(&render_at(120.0, 120.0));
+        assert!(!complete.contains('R'));
+        assert!(!complete.contains('W'));
+        assert!(!complete.contains('x'));
     }
 }
 

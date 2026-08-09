@@ -213,28 +213,31 @@ pub async fn open_runtime(
         }
     }
 
-    let metadata_refresh_job = if let Some(item_id) = restored_item_id {
-        let db_file = paths.db_file.clone();
-        Some(tokio::task::spawn_blocking(move || {
-            let store = PlaylistStore::new(db_file);
-            let Some(row) = store
+    // Populate tags for the whole playlist in the background. Prioritize the
+    // restored row so now-playing metadata appears immediately, then continue
+    // through every missing row instead of leaving the playlist filename-only.
+    let db_file = paths.db_file.clone();
+    let metadata_refresh_job = Some(tokio::task::spawn_blocking(move || {
+        let store = PlaylistStore::new(db_file);
+        let mut updated = 0usize;
+        if let Some(item_id) = restored_item_id {
+            if let Some(row) = store
                 .get_item_row(playlist_id, item_id)
                 .map_err(|error| error.to_string())?
-            else {
-                return Ok(0);
-            };
-            if row.meta_valid == Some(true) {
-                return Ok(0);
+            {
+                if row.meta_valid != Some(true) {
+                    let metadata = read_track_meta(&row.path);
+                    store
+                        .upsert_track_meta(row.track_id, &metadata)
+                        .map_err(|error| error.to_string())?;
+                    updated += 1;
+                }
             }
-            let metadata = read_track_meta(&row.path);
-            store
-                .upsert_track_meta(row.track_id, &metadata)
-                .map_err(|error| error.to_string())?;
-            Ok(1)
-        }))
-    } else {
-        None
-    };
+        }
+        updated += refresh_playlist_metadata(&store, playlist_id, 2000)
+            .map_err(|error| error.to_string())?;
+        Ok(updated)
+    }));
 
     let visualizer_id = app_state
         .visualizer_id
@@ -1819,6 +1822,40 @@ mod tests {
             runtime.tick().await;
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+        runtime.player.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn startup_refreshes_metadata_for_the_entire_playlist() {
+        let dir = temp_dir("refresh_all_metadata");
+        let paths = AppPaths {
+            data_dir: dir.clone(),
+            config_dir: dir.clone(),
+            log_dir: dir.join("logs"),
+            state_file: dir.join("state.json"),
+            db_file: dir.join("db.sqlite3"),
+        };
+        let store = PlaylistStore::new(&paths.db_file);
+        store.initialize().unwrap();
+        let playlist_id = store.ensure_playlist("Default").unwrap();
+        let first = dir.join("first.mp3");
+        let second = dir.join("second.mp3");
+        std::fs::write(&first, b"").unwrap();
+        std::fs::write(&second, b"").unwrap();
+        store.add_tracks(playlist_id, &[first, second]).unwrap();
+
+        let mut runtime = open_runtime(paths, Some(BackendKind::Fake)).await.unwrap();
+        assert!(runtime.metadata_refresh_job.is_some());
+        while runtime.metadata_refresh_job.is_some() {
+            runtime.tick().await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let rows = runtime.fetch_rows(0, 10).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|row| row.meta_valid == Some(false)));
+
         runtime.player.shutdown().await.unwrap();
         let _ = std::fs::remove_dir_all(dir);
     }
