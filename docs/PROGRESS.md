@@ -34,7 +34,7 @@ cargo run -p tz-player -- doctor
 | Key | Action |
 |-----|--------|
 | `f` | Find (FTS filter, live as you type) |
-| `a` | Browse & add (navigate, Enter/Space to add) |
+| `a` | Browse & add (navigate, Enter opens, Space adds) |
 | `c` then `y`/`n` | Clear playlist confirm |
 | `z` | Cycle visualizers |
 | `Shift+Z` | Hide/show visualizer pane |

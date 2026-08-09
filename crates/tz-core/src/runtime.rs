@@ -504,21 +504,19 @@ impl AppRuntime {
                             self.browse_cursor = 0;
                         }
                     } else {
-                        let name = entry.name.clone();
                         self.add_paths_internal(&[entry.path])?;
                         self.last_browse_dir = self.browse_dir.clone();
                         self.input_mode = "normal".into();
-                        self.set_status(format!("Added '{name}'"));
                     }
                 }
             }
             Command::BrowseSelect => {
                 if let Some(entry) = self.browse_entries.get(self.browse_cursor).cloned() {
-                    let name = entry.name.clone();
                     self.add_paths_internal(&[entry.path])?;
-                    self.last_browse_dir = self.browse_dir.clone();
+                    if let Some(dir) = self.browse_dir.clone() {
+                        self.last_browse_dir = Some(dir);
+                    }
                     self.input_mode = "normal".into();
-                    self.set_status(format!("Added '{name}'"));
                 }
             }
             Command::BrowseParent => {
@@ -547,7 +545,9 @@ impl AppRuntime {
                 }
             }
             Command::BrowseCancel => {
-                self.last_browse_dir = self.browse_dir.clone();
+                if let Some(dir) = self.browse_dir.clone() {
+                    self.last_browse_dir = Some(dir);
+                }
                 self.input_mode = "normal".into();
                 self.browse_entries.clear();
                 self.browse_cursor = 0;
