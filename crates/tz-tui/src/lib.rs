@@ -1150,15 +1150,53 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn esc_cancels_the_browser_without_adding_anything() {
-        let mut runtime = bare_test_runtime("browse_keys_cancel").await;
+    async fn browse_navigate_descend_select_and_close_via_keys() {
+        let mut runtime = bare_test_runtime("browse_keys_flow").await;
         let dir = runtime.paths.data_dir.clone();
-        std::fs::write(dir.join("track.mp3"), b"").unwrap();
+        let sub = dir.join("Album");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("song.mp3"), b"").unwrap();
+        runtime.last_browse_dir = Some(dir.clone());
         let mut viz = VisualizerHost::new(false);
 
         handle_key(&mut runtime, &mut viz, KeyCode::Char('a'), KeyModifiers::NONE)
             .await
             .unwrap();
+        assert_eq!(runtime.input_mode, "browse");
+
+        handle_key(&mut runtime, &mut viz, KeyCode::Enter, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(
+            runtime.browse_dir,
+            Some(sub.clone()),
+            "Enter should descend into Album"
+        );
+
+        handle_key(&mut runtime, &mut viz, KeyCode::Char('a'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(
+            runtime.input_mode, "normal",
+            "'a' on a highlighted file adds and closes"
+        );
+        assert_eq!(runtime.playlist_count(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn esc_cancels_the_browser_without_adding_anything() {
+        let mut runtime = bare_test_runtime("browse_keys_cancel").await;
+        let dir = runtime.paths.data_dir.clone();
+        std::fs::write(dir.join("track.mp3"), b"").unwrap();
+        runtime.last_browse_dir = Some(dir.clone());
+        let mut viz = VisualizerHost::new(false);
+
+        handle_key(&mut runtime, &mut viz, KeyCode::Char('a'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(runtime.browse_dir, Some(dir.clone()));
         handle_key(&mut runtime, &mut viz, KeyCode::Esc, KeyModifiers::NONE)
             .await
             .unwrap();

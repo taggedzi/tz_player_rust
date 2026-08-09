@@ -57,7 +57,7 @@ pub struct AppRuntime {
     /// Directory the browser starts at on its *next* open this session.
     /// Not persisted to `AppState` — the first open of a run always starts
     /// at the current working directory.
-    last_browse_dir: Option<PathBuf>,
+    pub last_browse_dir: Option<PathBuf>,
     pub visualizer_id: String,
     /// Collapses the visualizer pane (playlist takes the full width) when
     /// true. Session-only — not persisted to `AppState`.
