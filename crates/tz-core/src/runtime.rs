@@ -16,6 +16,7 @@ use crate::player::{PlayerError, PlayerService, RepeatMode};
 use crate::state::{load_state_with_notice, save_state, AppState};
 
 const STATUS_TTL: Duration = Duration::from_secs(4);
+const VLC_START_ATTEMPTS: usize = 3;
 
 /// Severity of the current footer status message. Only `Error` (reserved for
 /// playback-backend failures — the audio path itself is disrupted) survives
@@ -95,6 +96,7 @@ pub struct AppRuntime {
     pub editor_pending_paths: Option<Vec<PathBuf>>,
     pub editor_pending_insert: Option<usize>,
     editor_scan_job: Option<tokio::task::JoinHandle<(String, usize, ScanResult)>>,
+    metadata_refresh_job: Option<tokio::task::JoinHandle<Result<usize, String>>>,
     pub editor_scan_generation: u64,
     pub visualizer_id: String,
     /// Collapses the visualizer pane (playlist takes the full width) when
@@ -145,22 +147,47 @@ pub async fn open_runtime(
 
     let mut backend_fallback_notice = None;
     let mut player = PlayerService::new(PlaylistStore::new(paths.db_file.clone()), backend);
-    if let Err(e) = player.start().await {
-        if matches!(backend, BackendKind::Vlc) {
-            tracing::warn!("VLC backend failed to start ({e}); falling back to fake");
+    if matches!(backend, BackendKind::Vlc) {
+        let mut failures = Vec::new();
+        let mut started = false;
+        for attempt in 1..=VLC_START_ATTEMPTS {
+            match player.start().await {
+                Ok(()) => {
+                    started = true;
+                    break;
+                }
+                Err(error) => {
+                    failures.push(format!("attempt {attempt}: {error}"));
+                    tracing::warn!(attempt, error = %error, "VLC backend failed to start");
+                    if attempt < VLC_START_ATTEMPTS {
+                        tokio::time::sleep(Duration::from_millis(150 * attempt as u64)).await;
+                        // Re-run discovery as well as dynamic loading on every attempt.
+                        player = PlayerService::new(
+                            PlaylistStore::new(paths.db_file.clone()),
+                            BackendKind::Vlc,
+                        );
+                    }
+                }
+            }
+        }
+        if !started {
+            let details = failures.join("; ");
+            tracing::error!(%details, "all VLC startup attempts failed; falling back to fake");
             player =
                 PlayerService::new(PlaylistStore::new(paths.db_file.clone()), BackendKind::Fake);
             player
                 .start()
                 .await
                 .map_err(|e| RuntimeError::Playback(e.to_string()))?;
-            app_state.playback_backend = "fake".into();
             backend_fallback_notice = Some(format!(
-                "VLC unavailable ({e}); using fake backend. Run: tz-player doctor"
+                "VLC failed after {VLC_START_ATTEMPTS} attempts ({details}); using fake backend"
             ));
-        } else {
-            return Err(RuntimeError::Playback(e.to_string()));
         }
+    } else {
+        player
+            .start()
+            .await
+            .map_err(|e| RuntimeError::Playback(e.to_string()))?;
     }
 
     let vol = (app_state.volume.clamp(0.0, 1.0) * 100.0).round() as u8;
@@ -172,11 +199,42 @@ pub async fn open_runtime(
         .await;
 
     let mut cursor_index = 0usize;
+    let mut restored_item_id = None;
     if let Some(item_id) = app_state.current_item_id {
         if let Ok(Some(idx)) = store.get_item_index(playlist_id, item_id) {
             cursor_index = idx.saturating_sub(1);
+            if player
+                .restore_item_context(playlist_id, item_id)
+                .await
+                .is_ok()
+            {
+                restored_item_id = Some(item_id);
+            }
         }
     }
+
+    let metadata_refresh_job = if let Some(item_id) = restored_item_id {
+        let db_file = paths.db_file.clone();
+        Some(tokio::task::spawn_blocking(move || {
+            let store = PlaylistStore::new(db_file);
+            let Some(row) = store
+                .get_item_row(playlist_id, item_id)
+                .map_err(|error| error.to_string())?
+            else {
+                return Ok(0);
+            };
+            if row.meta_valid == Some(true) {
+                return Ok(0);
+            }
+            let metadata = read_track_meta(&row.path);
+            store
+                .upsert_track_meta(row.track_id, &metadata)
+                .map_err(|error| error.to_string())?;
+            Ok(1)
+        }))
+    } else {
+        None
+    };
 
     let visualizer_id = app_state
         .visualizer_id
@@ -217,6 +275,7 @@ pub async fn open_runtime(
         editor_pending_paths: None,
         editor_pending_insert: None,
         editor_scan_job: None,
+        metadata_refresh_job,
         editor_scan_generation: 0,
         visualizer_id,
         visualizer_hidden: false,
@@ -228,6 +287,9 @@ pub async fn open_runtime(
         last_waveform_history: None,
         last_analysis_label: None,
     };
+    if restored_item_id.is_none() {
+        runtime.app_state.current_item_id = None;
+    }
     if let Some(notice) = state_notice {
         // Prefer a short single-line status for the TUI footer.
         runtime.set_warning("State file was invalid; settings reset to defaults");
@@ -363,6 +425,7 @@ impl AppRuntime {
     pub async fn tick(&mut self) {
         self.expire_status();
         self.poll_editor_scan().await;
+        self.poll_metadata_refresh().await;
         self.player.poll_position().await;
         let snap = self.player.snapshot().await;
         if let Some(path) = snap.track_path.clone() {
@@ -419,6 +482,42 @@ impl AppRuntime {
             self.last_waveform = None;
             self.last_waveform_history = None;
             self.last_analysis_label = None;
+        }
+    }
+
+    async fn poll_metadata_refresh(&mut self) {
+        let Some(job) = self.metadata_refresh_job.as_ref() else {
+            return;
+        };
+        if !job.is_finished() {
+            return;
+        }
+        let job = self
+            .metadata_refresh_job
+            .take()
+            .expect("metadata refresh job present");
+        match job.await {
+            Ok(Ok(updated)) => {
+                tracing::info!(updated, "startup metadata refresh completed");
+                let selected_item = self.player.snapshot().await.item_id;
+                if let Some(item_id) = selected_item {
+                    if let Err(error) = self
+                        .player
+                        .restore_item_context(self.playlist_id, item_id)
+                        .await
+                    {
+                        tracing::warn!(%error, "could not refresh selected track context");
+                    }
+                }
+            }
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "startup metadata refresh failed");
+                self.set_warning(format!("Metadata refresh failed: {error}"));
+            }
+            Err(error) => {
+                tracing::warn!(%error, "startup metadata task failed");
+                self.set_warning(format!("Metadata task failed: {error}"));
+            }
         }
     }
 
@@ -1372,7 +1471,11 @@ impl AppRuntime {
         self.app_state.speed = snap.speed;
         self.app_state.repeat_mode = snap.repeat_mode.as_str().into();
         self.app_state.shuffle = snap.shuffle;
-        self.app_state.playback_backend = snap.backend.as_str().into();
+        // A transient VLC startup failure may use fake playback for this run,
+        // but it must not silently replace the user's preferred backend.
+        if self.backend_fallback_notice.is_none() {
+            self.app_state.playback_backend = snap.backend.as_str().into();
+        }
         self.app_state.visualizer_id = Some(self.visualizer_id.clone());
         let _ = save_state(&self.paths.state_file, &self.app_state);
     }
@@ -1674,6 +1777,50 @@ mod tests {
             db_file: dir.join("db.sqlite3"),
         };
         open_runtime(paths, Some(BackendKind::Fake)).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn startup_restores_saved_track_context_without_playing() {
+        let dir = temp_dir("restore_saved_track");
+        let paths = AppPaths {
+            data_dir: dir.clone(),
+            config_dir: dir.clone(),
+            log_dir: dir.join("logs"),
+            state_file: dir.join("state.json"),
+            db_file: dir.join("db.sqlite3"),
+        };
+        let store = PlaylistStore::new(&paths.db_file);
+        store.initialize().unwrap();
+        let playlist_id = store.ensure_playlist("Default").unwrap();
+        let track = dir.join("remembered.mp3");
+        std::fs::write(&track, b"").unwrap();
+        store
+            .add_tracks(playlist_id, std::slice::from_ref(&track))
+            .unwrap();
+        let item_id = store.list_item_ids(playlist_id).unwrap()[0];
+        let state = AppState {
+            playlist_id: Some(playlist_id),
+            current_item_id: Some(item_id),
+            playback_backend: "fake".into(),
+            ..Default::default()
+        };
+        save_state(&paths.state_file, &state).unwrap();
+
+        let mut runtime = open_runtime(paths, Some(BackendKind::Fake)).await.unwrap();
+        let restored = runtime.player.snapshot().await;
+        assert_eq!(restored.status, BackendStatus::Idle);
+        assert_eq!(restored.item_id, Some(item_id));
+        assert_eq!(
+            restored.track_path.as_deref(),
+            Some(track.to_string_lossy().as_ref())
+        );
+
+        while runtime.metadata_refresh_job.is_some() {
+            runtime.tick().await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        runtime.player.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]

@@ -48,9 +48,21 @@ async fn ui_loop(
 ) -> Result<(), TuiError> {
     let mut scroll_offset = 0usize;
     let mut browse_scroll_offset = 0usize;
+    let mut editor_was_active = runtime.input_mode == "editor";
 
     loop {
         runtime.tick().await;
+        let editor_is_active = runtime.input_mode == "editor";
+        if editor_transitioned(editor_was_active, &runtime.input_mode) {
+            // On some terminals (notably Windows Terminal), Ratatui's logical
+            // back buffer can diverge from cells physically left on screen.
+            // A resize repairs that by issuing a terminal-level clear; do the
+            // same once whenever the full-screen editor is entered or exited.
+            terminal
+                .clear()
+                .map_err(|error| TuiError::Io(error.to_string()))?;
+            editor_was_active = editor_is_active;
+        }
         let snap = runtime.snapshot().await;
         let count = runtime.playlist_count();
         let term_size = terminal.size().map_err(|e| TuiError::Io(e.to_string()))?;
@@ -196,6 +208,10 @@ async fn ui_loop(
         }
     }
     Ok(())
+}
+
+fn editor_transitioned(was_active: bool, input_mode: &str) -> bool {
+    was_active != (input_mode == "editor")
 }
 
 /// Split the main row into (playlist, visualizer) areas. Returns `None` for
@@ -587,6 +603,10 @@ fn draw_help_overlay(f: &mut ratatui::Frame<'_>, area: Rect) {
 }
 
 fn draw_editor_screen(f: &mut ratatui::Frame<'_>, area: Rect, runtime: &AppRuntime) {
+    // The editor replaces the normal app chrome rather than overlaying it.
+    // Clear every cell first so sparse lists cannot leave playlist/visualizer
+    // glyphs from the previous frame visible in their unused rows.
+    f.render_widget(Clear, area);
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -1412,6 +1432,41 @@ mod tests {
         assert!(text.contains("alpha.mp3"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn editor_screen_clears_previous_frame_content() {
+        let mut runtime = bare_test_runtime("editor_clears_frame").await;
+        runtime.handle(Command::EditorOpen).await.unwrap();
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let dirty = (0..24)
+            .map(|_| "STALE_BACKGROUND")
+            .collect::<Vec<_>>()
+            .join("\n");
+        terminal
+            .draw(|frame| frame.render_widget(Paragraph::new(dirty.as_str()), frame.area()))
+            .unwrap();
+        terminal
+            .draw(|frame| draw_editor_screen(frame, frame.area(), &runtime))
+            .unwrap();
+
+        let text = buffer_text(&terminal.backend().buffer().clone());
+        assert!(
+            !text.contains("STALE_BACKGROUND"),
+            "editor leaked content from the previous frame:\n{text}"
+        );
+
+        let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
+    }
+
+    #[test]
+    fn entering_and_exiting_editor_require_terminal_level_clear() {
+        assert!(editor_transitioned(false, "editor"));
+        assert!(editor_transitioned(true, "normal"));
+        assert!(!editor_transitioned(true, "editor"));
+        assert!(!editor_transitioned(false, "normal"));
     }
 
     #[test]

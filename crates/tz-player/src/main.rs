@@ -1,7 +1,9 @@
 //! tz-player binary — CLI entrypoints for the Rust rewrite.
 
+use std::fs::OpenOptions;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Mutex;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use tracing_subscriber::EnvFilter;
@@ -85,6 +87,7 @@ enum Commands {
 async fn main() -> ExitCode {
     let cli = Cli::parse();
     init_logging(&cli);
+    tracing::info!(version = VERSION, "tz-player starting");
 
     match cli.command {
         Some(Commands::Doctor) => cmd_doctor(cli.backend.into()),
@@ -182,6 +185,32 @@ fn init_logging(cli: &Cli) {
         "info"
     };
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
+
+    if let Some(path) = cli.log_file.as_deref() {
+        if let Some(parent) = path.parent() {
+            if let Err(error) = std::fs::create_dir_all(parent) {
+                eprintln!(
+                    "Could not create log directory '{}': {error}",
+                    parent.display()
+                );
+            }
+        }
+        match OpenOptions::new().create(true).append(true).open(path) {
+            Ok(file) => {
+                let _ = tracing_subscriber::fmt()
+                    .with_env_filter(filter)
+                    .with_ansi(false)
+                    .with_target(false)
+                    .with_writer(Mutex::new(file))
+                    .try_init();
+                return;
+            }
+            Err(error) => {
+                eprintln!("Could not open log file '{}': {error}", path.display());
+            }
+        }
+    }
+
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)

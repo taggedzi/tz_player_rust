@@ -162,6 +162,38 @@ impl PlayerService {
         self.state.lock().await.clone()
     }
 
+    /// Restore the selected track's display context without starting playback.
+    ///
+    /// Persisted state stores the last selected playlist item, but the playback
+    /// backend intentionally starts idle. Hydrating the descriptive fields here
+    /// lets the transport and visualizer header show that selection immediately.
+    pub async fn restore_item_context(
+        &mut self,
+        playlist_id: i64,
+        item_id: i64,
+    ) -> Result<(), PlayerError> {
+        let row = self
+            .store
+            .get_item_row(playlist_id, item_id)
+            .map_err(|e| PlayerError::Db(e.to_string()))?
+            .ok_or_else(|| PlayerError::Message("saved playlist item no longer exists".into()))?;
+        let mut state = self.state.lock().await;
+        state.playlist_id = Some(playlist_id);
+        state.item_id = Some(item_id);
+        state.track_path = Some(row.path.to_string_lossy().into_owned());
+        state.title = row.title;
+        state.artist = row.artist;
+        state.album = row.album;
+        if let Some(duration_ms) = row
+            .duration_ms
+            .and_then(|duration| u64::try_from(duration).ok())
+            .filter(|duration| *duration > 0)
+        {
+            state.duration_ms = duration_ms;
+        }
+        Ok(())
+    }
+
     pub async fn transport_snapshot(
         &self,
         cursor_index: usize,
@@ -636,6 +668,27 @@ mod tests {
         assert_eq!(player.snapshot().await.status, BackendStatus::Paused);
         player.next().await.unwrap();
         assert_eq!(player.snapshot().await.item_id, Some(ids[1]));
+        player.shutdown().await.unwrap();
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn restore_item_context_hydrates_selection_without_playing() {
+        let (store, pid, dir) = temp_store();
+        let ids = store.list_item_ids(pid).unwrap();
+        let mut player = PlayerService::new(store, BackendKind::Fake);
+        player.start().await.unwrap();
+
+        player.restore_item_context(pid, ids[1]).await.unwrap();
+
+        let state = player.snapshot().await;
+        assert_eq!(state.status, BackendStatus::Idle);
+        assert_eq!(state.playlist_id, Some(pid));
+        assert_eq!(state.item_id, Some(ids[1]));
+        assert!(state
+            .track_path
+            .as_deref()
+            .is_some_and(|path| path.ends_with("t1.mp3")));
         player.shutdown().await.unwrap();
         let _ = fs::remove_dir_all(dir);
     }
