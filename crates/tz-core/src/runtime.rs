@@ -470,7 +470,8 @@ impl AppRuntime {
                     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
                 });
                 self.browse_entries = list_dir(&dir);
-                self.browse_dir = Some(dir);
+                self.browse_dir = Some(dir.clone());
+                self.last_browse_dir = Some(dir);
                 self.browse_cursor = 0;
                 self.input_mode = "browse".into();
                 self.set_status(
@@ -505,6 +506,7 @@ impl AppRuntime {
                     } else {
                         let name = entry.name.clone();
                         self.add_paths_internal(&[entry.path])?;
+                        self.last_browse_dir = self.browse_dir.clone();
                         self.input_mode = "normal".into();
                         self.set_status(format!("Added '{name}'"));
                     }
@@ -514,34 +516,38 @@ impl AppRuntime {
                 if let Some(entry) = self.browse_entries.get(self.browse_cursor).cloned() {
                     let name = entry.name.clone();
                     self.add_paths_internal(&[entry.path])?;
+                    self.last_browse_dir = self.browse_dir.clone();
                     self.input_mode = "normal".into();
                     self.set_status(format!("Added '{name}'"));
                 }
             }
-            Command::BrowseParent => match self.browse_dir.clone() {
-                Some(dir) => match dir.parent() {
-                    Some(parent) => {
-                        if std::fs::read_dir(parent).is_err() {
-                            self.set_warning(format!("Can't open '{}'", parent.display()));
-                        } else {
-                            let parent = parent.to_path_buf();
-                            self.browse_entries = list_dir(&parent);
-                            self.browse_dir = Some(parent);
-                            self.browse_cursor = 0;
+            Command::BrowseParent => {
+                if let Some(dir) = self.browse_dir.clone() {
+                    match dir.parent() {
+                        Some(parent) => {
+                            if std::fs::read_dir(parent).is_err() {
+                                self.set_warning(format!("Can't open '{}'", parent.display()));
+                            } else {
+                                let parent = parent.to_path_buf();
+                                self.browse_entries = list_dir(&parent);
+                                self.browse_dir = Some(parent.clone());
+                                self.last_browse_dir = Some(parent);
+                                self.browse_cursor = 0;
+                            }
+                        }
+                        None => {
+                            let drives = drive_list();
+                            if !drives.is_empty() {
+                                self.browse_entries = drives;
+                                self.browse_dir = None;
+                                self.browse_cursor = 0;
+                            }
                         }
                     }
-                    None => {
-                        let drives = drive_list();
-                        if !drives.is_empty() {
-                            self.browse_entries = drives;
-                            self.browse_dir = None;
-                            self.browse_cursor = 0;
-                        }
-                    }
-                },
-                None => {}
-            },
+                }
+            }
             Command::BrowseCancel => {
+                self.last_browse_dir = self.browse_dir.clone();
                 self.input_mode = "normal".into();
                 self.browse_entries.clear();
                 self.browse_cursor = 0;
@@ -1282,6 +1288,37 @@ mod tests {
         runtime.handle(Command::BrowseParent).await.unwrap();
 
         assert_eq!(runtime.browse_dir, Some(root.clone()));
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
+    }
+
+    #[tokio::test]
+    async fn browse_parent_and_cancel_remember_directory_for_next_open() {
+        // Regression test: `last_browse_dir` must update on every navigation
+        // that leaves `browse_dir` in a new place, not just on descend. Here
+        // the session never descends — it opens at `sub`, ascends to `root`
+        // via BrowseParent, then cancels — so if BrowseParent/BrowseCancel
+        // didn't update `last_browse_dir`, the next RequestAddFolder would
+        // wrongly reopen at `sub`.
+        let mut runtime = test_runtime("browse_remember").await;
+        let root = temp_dir("browse_remember_root");
+        let sub = root.join("Album");
+        std::fs::create_dir_all(&sub).unwrap();
+        runtime.last_browse_dir = Some(sub.clone());
+        runtime.handle(Command::RequestAddFolder).await.unwrap();
+
+        runtime.handle(Command::BrowseParent).await.unwrap();
+        assert_eq!(runtime.browse_dir, Some(root.clone()));
+
+        runtime.handle(Command::BrowseCancel).await.unwrap();
+        runtime.handle(Command::RequestAddFolder).await.unwrap();
+
+        assert_eq!(
+            runtime.browse_dir,
+            Some(root.clone()),
+            "reopening should resume at the directory last shown, not fall back to where the session started"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
