@@ -5,6 +5,78 @@ both "Core" and "TUI" (About info) have been merged. The Shift+Left/Right seek
 item has been removed — verified already implemented in
 `crates/tz-tui/src/lib.rs` (bound to ±30s).
 
+## Security hardening backlog
+
+Triaged from the 2026-08-09 security review. There are no Tier 0 emergency
+findings. Complete Tiers 1 and 2 before a public release; Tier 3 is the
+release-hardening phase.
+
+### Security Tier 1 — Address before public release
+
+- [ ] **Eliminate multithreaded environment mutation.** Remove or relocate the
+  `VLC_PLUGIN_PATH` mutation from the VLC worker. Configure it before Tokio
+  starts, avoid the mutation on Unix, or restrict it to Windows if that is the
+  only platform requiring it. Verify VLC startup on Windows, Linux, and macOS.
+  **Done when:** no Unix code mutates the process environment after threads
+  start.
+- [ ] **Bound media-analysis resource consumption.** Stream FFmpeg output
+  instead of using unbounded `read_to_end`; enforce configurable decoded-byte,
+  duration, and execution-time limits; kill and reap FFmpeg after timeout or
+  limit violation; set FFmpeg stdin to null; avoid decoding each track twice;
+  and preflight or stream WAV processing rather than collecting every sample.
+  **Done when:** crafted or oversized media cannot cause unbounded memory growth
+  or an indefinite analysis job.
+- [ ] **Limit embedded cover-art decoding.** Reject excessively large embedded
+  pictures before decoding, set strict image width/height/allocation limits,
+  and consider limiting the total metadata and picture payload accepted from
+  Lofty. **Done when:** a cover image cannot allocate hundreds of megabytes
+  before being resized.
+- [ ] **Sanitize plain terminal output.** Introduce a shared terminal-safe
+  display function that strips or visibly escapes C0/C1 controls, ESC, CR/LF,
+  and problematic directional controls. Apply it to `tz-player list`,
+  diagnostic messages containing filenames, and other non-Ratatui output. Add
+  tests containing ANSI, OSC, newline, and bidi-control payloads. **Done when:**
+  metadata and filenames cannot emit terminal control sequences.
+
+### Security Tier 2 — Security hardening
+
+- [ ] **Make the LibVLC ABI explicit and fail closed.** Load and validate
+  `libvlc_get_version`; explicitly support VLC 3 and/or VLC 4 and reject other
+  majors; maintain separate signatures and time-unit conversions; represent C
+  enum returns as integers and validate them before conversion; and test
+  unknown states and unsupported versions. **Done when:** no foreign function
+  can be called through a signature from the wrong LibVLC ABI.
+- [ ] **Remove the affected `lru 0.12.5` dependency.** Upgrade Ratatui or
+  otherwise move to `lru >= 0.16.3`, then rerun tests, Clippy, and
+  `cargo audit`. **Done when:** RUSTSEC-2026-0002 is absent from the lockfile
+  audit.
+- [ ] **Resolve the unmaintained `paste` dependency.** Upgrade Ratatui and Lofty
+  where possible. If no compatible upgrade removes it, document a temporary
+  advisory exception with an owner and expiration date. **Done when:** `paste`
+  is removed or explicitly tracked as accepted technical risk.
+- [ ] **Restore the documented Clippy gate.** Move helper functions before the
+  test module in `vlc_engine.rs`, and resolve or intentionally allow the
+  visualizer's `too_many_arguments` warning. **Done when:**
+  `cargo clippy --workspace --all-targets -- -D warnings` succeeds.
+
+### Security Tier 3 — Supply-chain and operational controls
+
+- [ ] **Add dependency security policy to CI.** Add `cargo audit` and a
+  configured `deny.toml` covering advisories, approved licenses, registries,
+  and Git dependencies. Decide whether unmaintained advisories fail CI or
+  require time-bounded exceptions. Keep `Cargo.lock` committed. **Done when:**
+  vulnerable or disallowed dependencies block pull requests.
+- [ ] **Pin GitHub Actions by immutable commit SHA.** Pin checkout, Rust
+  toolchain, and cache actions while retaining comments identifying their
+  release tags, and establish a periodic update process. **Done when:** CI no
+  longer executes mutable action tags.
+- [ ] **Document runtime trust boundaries.** State that FFmpeg is resolved
+  through `PATH` and LibVLC is loaded dynamically; recommend trusted
+  package-manager installations; document supported VLC majors and analysis
+  limits; and add malicious-media and dependency-audit checks to the release
+  checklist. **Done when:** release documentation accurately describes
+  external-code and untrusted-media risks.
+
 ## Tier 0 — Correctness fixes (small, isolated, do first)
 
 All three done.
