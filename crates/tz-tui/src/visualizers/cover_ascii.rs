@@ -23,8 +23,8 @@ struct CoverCache {
     src_h: u32,
     /// Row-major luma 0–255
     luma: Vec<u8>,
-    /// Average RGB for color tint
-    avg_rgb: (u8, u8, u8),
+    /// Row-major source color corresponding to each luminance sample.
+    rgb: Vec<(u8, u8, u8)>,
     has_art: bool,
 }
 
@@ -36,10 +36,10 @@ impl CoverCache {
         }
         self.path = key;
         self.luma.clear();
+        self.rgb.clear();
         self.src_w = 0;
         self.src_h = 0;
         self.has_art = false;
-        self.avg_rgb = (180, 180, 180);
 
         let Some(path) = track_path.filter(|p| !p.is_empty()) else {
             return;
@@ -52,29 +52,23 @@ impl CoverCache {
             let tw = ((w as f32) * scale).round().max(1.0) as u32;
             let th = ((h as f32) * scale).round().max(1.0) as u32;
             let small = img.resize_exact(tw, th, FilterType::Triangle).to_rgb8();
-            let mut sum = [0u64; 3];
-            self.luma = small
-                .pixels()
-                .map(|p| {
-                    let r = u64::from(p[0]);
-                    let g = u64::from(p[1]);
-                    let b = u64::from(p[2]);
-                    sum[0] += r;
-                    sum[1] += g;
-                    sum[2] += b;
-                    // Rec. 601 luma
-                    ((77 * r + 150 * g + 29 * b) / 256) as u8
-                })
-                .collect();
-            let n = (tw * th).max(1) as u64;
-            self.avg_rgb = ((sum[0] / n) as u8, (sum[1] / n) as u8, (sum[2] / n) as u8);
+            self.luma.reserve((tw * th) as usize);
+            self.rgb.reserve((tw * th) as usize);
+            for pixel in small.pixels() {
+                let r = u64::from(pixel[0]);
+                let g = u64::from(pixel[1]);
+                let b = u64::from(pixel[2]);
+                // Rec. 601 luma drives the glyph; original RGB drives its color.
+                self.luma.push(((77 * r + 150 * g + 29 * b) / 256) as u8);
+                self.rgb.push((pixel[0], pixel[1], pixel[2]));
+            }
             self.src_w = tw;
             self.src_h = th;
-            self.has_art = !self.luma.is_empty();
+            self.has_art = !self.luma.is_empty() && self.luma.len() == self.rgb.len();
         }
     }
 
-    fn sample(&self, u: f32, v: f32) -> Option<u8> {
+    fn sample(&self, u: f32, v: f32) -> Option<(u8, (u8, u8, u8))> {
         if !self.has_art || self.src_w == 0 || self.src_h == 0 {
             return None;
         }
@@ -83,7 +77,7 @@ impl CoverCache {
         let x = ((u * (self.src_w.saturating_sub(1) as f32)).round() as u32).min(self.src_w - 1);
         let y = ((v * (self.src_h.saturating_sub(1) as f32)).round() as u32).min(self.src_h - 1);
         let i = (y * self.src_w + x) as usize;
-        self.luma.get(i).copied()
+        self.luma.get(i).copied().zip(self.rgb.get(i).copied())
     }
 }
 
@@ -195,18 +189,7 @@ fn render_cover(
     if cache.has_art {
         // Letterbox cover into panel while preserving aspect.
         let art_aspect = cache.src_w as f32 / cache.src_h.max(1) as f32;
-        // Character cells are ~2:1 tall; compensate so art doesn't look stretched.
-        let cell_aspect = 0.5f32;
-        let panel_aspect = (width as f32) / (height as f32).max(1.0) * cell_aspect;
-        let (draw_w, draw_h) = if art_aspect > panel_aspect {
-            let w = width;
-            let h = ((w as f32 / art_aspect) / cell_aspect).round().max(1.0) as usize;
-            (w, h.min(height))
-        } else {
-            let h = height;
-            let w = ((h as f32 * cell_aspect) * art_aspect).round().max(1.0) as usize;
-            (w.min(width), h)
-        };
+        let (draw_w, draw_h) = fit_cover_dimensions(width, height, art_aspect);
         let x0 = width.saturating_sub(draw_w) / 2;
         let y0 = height.saturating_sub(draw_h) / 2;
 
@@ -234,7 +217,7 @@ fn render_cover(
                     u += (v * 6.0 + t).sin() * 0.015 * (0.5 + mono);
                     v += (u * 5.0 - t * 0.8).cos() * 0.02 * (0.5 + mono);
                 }
-                let Some(luma) = cache.sample(u, v) else {
+                let Some((luma, rgb)) = cache.sample(u, v) else {
                     continue;
                 };
                 let mut level = f32::from(luma) / 255.0;
@@ -247,7 +230,7 @@ fn render_cover(
                     continue;
                 }
                 let fg = if color {
-                    tint_from_luma(luma, cache.avg_rgb)
+                    cover_pixel_color(rgb)
                 } else {
                     energy_color(level, false)
                 };
@@ -311,6 +294,27 @@ fn render_cover(
     fit_lines(canvas.into_lines(), height)
 }
 
+fn fit_cover_dimensions(width: usize, height: usize, art_aspect: f32) -> (usize, usize) {
+    // A terminal cell is approximately half as wide as it is tall. Therefore a
+    // square image needs about two character columns per row to look square.
+    let cell_width_over_height = 0.5f32;
+    let art_aspect = art_aspect.max(0.01);
+    let panel_aspect = width as f32 * cell_width_over_height / height.max(1) as f32;
+    if art_aspect > panel_aspect {
+        let draw_w = width.max(1);
+        let draw_h = (draw_w as f32 * cell_width_over_height / art_aspect)
+            .round()
+            .max(1.0) as usize;
+        (draw_w, draw_h.min(height.max(1)))
+    } else {
+        let draw_h = height.max(1);
+        let draw_w = (draw_h as f32 * art_aspect / cell_width_over_height)
+            .round()
+            .max(1.0) as usize;
+        (draw_w.min(width.max(1)), draw_h)
+    }
+}
+
 fn center_text(canvas: &mut Canvas, width: usize, y: usize, text: &str, fg: Color) {
     let chars: Vec<char> = text.chars().take(width).collect();
     let x0 = width.saturating_sub(chars.len()) / 2;
@@ -319,11 +323,34 @@ fn center_text(canvas: &mut Canvas, width: usize, y: usize, text: &str, fg: Colo
     }
 }
 
-fn tint_from_luma(luma: u8, avg: (u8, u8, u8)) -> Color {
-    let l = f32::from(luma) / 255.0;
-    // Mix average cover hue with luminance so bright areas stay readable.
-    let r = ((f32::from(avg.0) * 0.55 + 255.0 * l * 0.45) as u8).max(20);
-    let g = ((f32::from(avg.1) * 0.55 + 255.0 * l * 0.45) as u8).max(20);
-    let b = ((f32::from(avg.2) * 0.55 + 255.0 * l * 0.45) as u8).max(20);
-    Color::Rgb(r, g, b)
+fn cover_pixel_color(rgb: (u8, u8, u8)) -> Color {
+    // Preserve the source palette. A tiny floor prevents saturated dark colors
+    // from disappearing completely against a black terminal background.
+    Color::Rgb(rgb.0.max(8), rgb.1.max(8), rgb.2.max(8))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn square_cover_uses_two_columns_per_terminal_row() {
+        assert_eq!(fit_cover_dimensions(60, 20, 1.0), (40, 20));
+        assert_eq!(fit_cover_dimensions(30, 20, 1.0), (30, 15));
+    }
+
+    #[test]
+    fn cover_fit_never_exceeds_the_panel() {
+        for aspect in [0.5, 1.0, 1.5, 2.0] {
+            let (width, height) = fit_cover_dimensions(57, 19, aspect);
+            assert!((1..=57).contains(&width));
+            assert!((1..=19).contains(&height));
+        }
+    }
+
+    #[test]
+    fn cover_characters_preserve_source_pixel_color() {
+        assert_eq!(cover_pixel_color((220, 35, 90)), Color::Rgb(220, 35, 90));
+        assert_eq!(cover_pixel_color((0, 4, 7)), Color::Rgb(8, 8, 8));
+    }
 }
