@@ -45,9 +45,19 @@ pub struct AppRuntime {
     pub find_query: String,
     pub find_ids: Option<Vec<i64>>,
     pub confirm_clear: bool,
-    /// "normal" | "find" | "add_path" | "help"
+    /// "normal" | "find" | "browse" | "help"
     pub input_mode: String,
     pub input_buffer: String,
+    /// Current directory shown by the folder-browser modal. `None` means
+    /// the synthetic drive-selection level (Windows only, reached by going
+    /// up from a drive root — see `Command::BrowseParent`).
+    pub browse_dir: Option<PathBuf>,
+    pub browse_entries: Vec<FsEntry>,
+    pub browse_cursor: usize,
+    /// Directory the browser starts at on its *next* open this session.
+    /// Not persisted to `AppState` — the first open of a run always starts
+    /// at the current working directory.
+    last_browse_dir: Option<PathBuf>,
     pub visualizer_id: String,
     /// Collapses the visualizer pane (playlist takes the full width) when
     /// true. Session-only — not persisted to `AppState`.
@@ -147,6 +157,10 @@ pub async fn open_runtime(
         confirm_clear: false,
         input_mode: "normal".into(),
         input_buffer: String::new(),
+        browse_dir: None,
+        browse_entries: Vec::new(),
+        browse_cursor: 0,
+        last_browse_dir: None,
         visualizer_id,
         visualizer_hidden: false,
         backend_fallback_notice,
@@ -451,10 +465,87 @@ impl AppRuntime {
                 let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
                 self.add_paths_internal(&paths)?;
             }
-            Command::RequestAddPath => {
-                self.input_mode = "add_path".into();
-                self.input_buffer.clear();
-                self.set_status("Enter path (Enter=add, Esc=cancel)");
+            Command::RequestAddFolder => {
+                let dir = self.last_browse_dir.clone().unwrap_or_else(|| {
+                    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+                });
+                self.browse_entries = list_dir(&dir);
+                self.browse_dir = Some(dir);
+                self.browse_cursor = 0;
+                self.input_mode = "browse".into();
+                self.set_status(
+                    "Browse: Enter=open/add file  a/Space=add folder  Backspace=up  Esc=cancel",
+                );
+            }
+            Command::BrowseUp => {
+                self.browse_cursor = self.browse_cursor.saturating_sub(1);
+            }
+            Command::BrowseDown => {
+                if !self.browse_entries.is_empty() {
+                    self.browse_cursor =
+                        (self.browse_cursor + 1).min(self.browse_entries.len() - 1);
+                }
+            }
+            Command::BrowseEnter => {
+                if let Some(entry) = self.browse_entries.get(self.browse_cursor).cloned() {
+                    if entry.is_dir {
+                        if std::fs::read_dir(&entry.path).is_err() {
+                            // Keep the browser at the current (still-valid)
+                            // directory rather than switching into one we
+                            // can't actually list — an empty pane with no
+                            // explanation would look like a bug, not a
+                            // permissions issue.
+                            self.set_warning(format!("Can't open '{}'", entry.name));
+                        } else {
+                            self.browse_entries = list_dir(&entry.path);
+                            self.browse_dir = Some(entry.path.clone());
+                            self.last_browse_dir = Some(entry.path);
+                            self.browse_cursor = 0;
+                        }
+                    } else {
+                        let name = entry.name.clone();
+                        self.add_paths_internal(&[entry.path])?;
+                        self.input_mode = "normal".into();
+                        self.set_status(format!("Added '{name}'"));
+                    }
+                }
+            }
+            Command::BrowseSelect => {
+                if let Some(entry) = self.browse_entries.get(self.browse_cursor).cloned() {
+                    let name = entry.name.clone();
+                    self.add_paths_internal(&[entry.path])?;
+                    self.input_mode = "normal".into();
+                    self.set_status(format!("Added '{name}'"));
+                }
+            }
+            Command::BrowseParent => match self.browse_dir.clone() {
+                Some(dir) => match dir.parent() {
+                    Some(parent) => {
+                        if std::fs::read_dir(parent).is_err() {
+                            self.set_warning(format!("Can't open '{}'", parent.display()));
+                        } else {
+                            let parent = parent.to_path_buf();
+                            self.browse_entries = list_dir(&parent);
+                            self.browse_dir = Some(parent);
+                            self.browse_cursor = 0;
+                        }
+                    }
+                    None => {
+                        let drives = drive_list();
+                        if !drives.is_empty() {
+                            self.browse_entries = drives;
+                            self.browse_dir = None;
+                            self.browse_cursor = 0;
+                        }
+                    }
+                },
+                None => {}
+            },
+            Command::BrowseCancel => {
+                self.input_mode = "normal".into();
+                self.browse_entries.clear();
+                self.browse_cursor = 0;
+                self.set_status("Cancelled");
             }
             Command::RemoveSelected => {
                 if let Some(id) = self.cursor_item_id() {
@@ -1095,5 +1186,138 @@ mod tests {
     fn list_dir_on_unreadable_or_missing_path_returns_empty() {
         let missing = std::env::temp_dir().join("tz_runtime_does_not_exist_12345");
         assert!(list_dir(&missing).is_empty());
+    }
+
+    #[tokio::test]
+    async fn request_add_folder_opens_browser_at_last_dir_or_cwd() {
+        let mut runtime = test_runtime("browse_open").await;
+        let dir = temp_dir("browse_open_target");
+        std::fs::write(dir.join("track.mp3"), b"").unwrap();
+        runtime.last_browse_dir = Some(dir.clone());
+
+        runtime.handle(Command::RequestAddFolder).await.unwrap();
+
+        assert_eq!(runtime.input_mode, "browse");
+        assert_eq!(runtime.browse_dir, Some(dir.clone()));
+        assert_eq!(runtime.browse_cursor, 0);
+        assert!(runtime.browse_entries.iter().any(|e| e.name == "track.mp3"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
+    }
+
+    #[tokio::test]
+    async fn browse_enter_descends_into_a_directory() {
+        let mut runtime = test_runtime("browse_descend").await;
+        let root = temp_dir("browse_descend_root");
+        let sub = root.join("Album");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("song.mp3"), b"").unwrap();
+        runtime.last_browse_dir = Some(root.clone());
+        runtime.handle(Command::RequestAddFolder).await.unwrap();
+        assert_eq!(runtime.browse_cursor, 0); // "Album" sorts as the only entry
+
+        runtime.handle(Command::BrowseEnter).await.unwrap();
+
+        assert_eq!(runtime.browse_dir, Some(sub.clone()));
+        assert_eq!(runtime.last_browse_dir, Some(sub.clone()));
+        assert!(runtime.browse_entries.iter().any(|e| e.name == "song.mp3"));
+        assert_eq!(runtime.input_mode, "browse", "descending should not close the modal");
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
+    }
+
+    #[tokio::test]
+    async fn browse_enter_on_a_file_adds_it_and_closes() {
+        let mut runtime = test_runtime("browse_add_file").await;
+        let dir = temp_dir("browse_add_file_target");
+        std::fs::write(dir.join("only.mp3"), b"").unwrap();
+        runtime.last_browse_dir = Some(dir.clone());
+        runtime.handle(Command::RequestAddFolder).await.unwrap();
+
+        runtime.handle(Command::BrowseEnter).await.unwrap();
+
+        assert_eq!(runtime.input_mode, "normal");
+        assert_eq!(runtime.playlist_count(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
+    }
+
+    #[tokio::test]
+    async fn browse_select_adds_a_folder_recursively_and_closes() {
+        let mut runtime = test_runtime("browse_add_folder").await;
+        let root = temp_dir("browse_add_folder_root");
+        let sub = root.join("Album");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("one.mp3"), b"").unwrap();
+        std::fs::write(sub.join("two.mp3"), b"").unwrap();
+        runtime.last_browse_dir = Some(root.clone());
+        runtime.handle(Command::RequestAddFolder).await.unwrap();
+        assert_eq!(runtime.browse_cursor, 0); // cursor is on "Album"
+
+        runtime.handle(Command::BrowseSelect).await.unwrap();
+
+        assert_eq!(runtime.input_mode, "normal");
+        assert_eq!(runtime.playlist_count(), 2);
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
+    }
+
+    #[tokio::test]
+    async fn browse_parent_goes_up_one_level() {
+        let mut runtime = test_runtime("browse_parent").await;
+        let root = temp_dir("browse_parent_root");
+        let sub = root.join("Album");
+        std::fs::create_dir_all(&sub).unwrap();
+        runtime.last_browse_dir = Some(sub.clone());
+        runtime.handle(Command::RequestAddFolder).await.unwrap();
+        assert_eq!(runtime.browse_dir, Some(sub.clone()));
+
+        runtime.handle(Command::BrowseParent).await.unwrap();
+
+        assert_eq!(runtime.browse_dir, Some(root.clone()));
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
+    }
+
+    #[tokio::test]
+    async fn browse_cancel_closes_without_adding_anything() {
+        let mut runtime = test_runtime("browse_cancel").await;
+        let dir = temp_dir("browse_cancel_target");
+        std::fs::write(dir.join("track.mp3"), b"").unwrap();
+        runtime.last_browse_dir = Some(dir.clone());
+        runtime.handle(Command::RequestAddFolder).await.unwrap();
+
+        runtime.handle(Command::BrowseCancel).await.unwrap();
+
+        assert_eq!(runtime.input_mode, "normal");
+        assert_eq!(runtime.playlist_count(), 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
+    }
+
+    #[tokio::test]
+    async fn browse_up_and_down_clamp_cursor_to_entry_bounds() {
+        let mut runtime = test_runtime("browse_clamp").await;
+        let dir = temp_dir("browse_clamp_target");
+        std::fs::write(dir.join("a.mp3"), b"").unwrap();
+        std::fs::write(dir.join("b.mp3"), b"").unwrap();
+        runtime.last_browse_dir = Some(dir.clone());
+        runtime.handle(Command::RequestAddFolder).await.unwrap();
+
+        runtime.handle(Command::BrowseUp).await.unwrap();
+        assert_eq!(runtime.browse_cursor, 0, "cannot go above the first entry");
+
+        runtime.handle(Command::BrowseDown).await.unwrap();
+        runtime.handle(Command::BrowseDown).await.unwrap();
+        assert_eq!(runtime.browse_cursor, 1, "cannot go past the last entry");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
     }
 }
