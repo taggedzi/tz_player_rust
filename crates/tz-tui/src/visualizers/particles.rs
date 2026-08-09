@@ -18,7 +18,6 @@ enum ParticleStyle {
     Reactor,
     GravityWell,
     Shockwave,
-    Rain,
     Orbital,
     Ember,
     Magnetic,
@@ -102,43 +101,6 @@ fn render_particles(
                 canvas.set(px, py, '.', energy_color(high * 0.6 + 0.2, color));
             }
             canvas.set(core_x, core_y, '*', Color::Yellow);
-        }
-        ParticleStyle::Rain => {
-            // Organic rain: independent drops, random x/speed/length, mild wind, ground splash.
-            let density = (count as f32 * 1.4).round() as usize + 24;
-            let wind = (t * 0.03).sin() * (0.15 + high * 0.25);
-            for idx in 0..density {
-                let drop_seed = mix_u64(seed, idx as u64 * 0x9e37 + 11);
-                let x0 = unit_noise(seed, drop_seed) * width as f32;
-                let speed = 0.35 + unit_noise(seed, drop_seed ^ 0x55) * 1.4 + bass * 0.9;
-                let length = 1 + (unit_noise(seed, drop_seed ^ 0xaa) * 3.0) as i32;
-                // Stagger start so drops don't share a phase lattice.
-                let phase = unit_noise(seed, drop_seed ^ 0x33) * rows as f32 * 3.0;
-                let fall = (t * speed + phase).rem_euclid((rows as f32) + 4.0) - 2.0;
-                let y = fall.round() as i32;
-                let x = (x0 + wind * fall * 0.15 + (drop_seed % 3) as f32 * 0.1).round() as i32;
-                if y < 0 || y >= rows as i32 {
-                    // Splash near ground when leaving bottom
-                    if y >= rows as i32 && y < rows as i32 + 2 && mono > 0.15 {
-                        canvas.set_if_empty(x, rows as i32 - 1, '.', Color::DarkGray);
-                        canvas.set_if_empty(x - 1, rows as i32 - 1, '.', Color::DarkGray);
-                        canvas.set_if_empty(x + 1, rows as i32 - 1, '.', Color::DarkGray);
-                    }
-                    continue;
-                }
-                let ch = if (onset && high > 0.45) || speed > 1.2 {
-                    '|'
-                } else if speed > 0.8 {
-                    ':'
-                } else {
-                    '.'
-                };
-                let heat = (0.2 + mono * 0.5 + bass * 0.2).clamp(0.15, 1.0);
-                canvas.set(x, y, ch, energy_color(heat, color));
-                for d in 1..=length {
-                    canvas.set_if_empty(x, y - d, '\'', Color::DarkGray);
-                }
-            }
         }
         ParticleStyle::Ember => {
             // Burning log: solid base coals + rising flames driven by spectrum bands.
@@ -1117,6 +1079,304 @@ fn render_data_core(
     }
 }
 
+#[derive(Debug, Clone)]
+struct RainDrop {
+    x: f32,
+    y: f32,
+    base_speed: f32,
+    trail_len: u8,
+    weight: f32,
+    brightness: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RainSplash {
+    x: i32,
+    age: u8,
+    brightness: f32,
+    bass: f32,
+    high: f32,
+}
+
+/// Stateful rain simulation. Music changes the weather, but never directly
+/// rewrites a drop's position; this keeps every trajectory continuously downward.
+#[derive(Debug)]
+pub struct ReactiveRainVisualizer {
+    color: bool,
+    drops: Vec<RainDrop>,
+    splashes: Vec<RainSplash>,
+    seed: u64,
+    serial: u64,
+    width: usize,
+    height: usize,
+    smoothed_energy: f32,
+    smoothed_high: f32,
+    smoothed_fall: f32,
+    smoothed_wind: f32,
+    beat_flash: f32,
+}
+
+impl Default for ReactiveRainVisualizer {
+    fn default() -> Self {
+        Self {
+            color: false,
+            drops: Vec::new(),
+            splashes: Vec::new(),
+            seed: 0,
+            serial: 0,
+            width: 0,
+            height: 0,
+            smoothed_energy: 0.0,
+            smoothed_high: 0.0,
+            smoothed_fall: 0.75,
+            smoothed_wind: 0.0,
+            beat_flash: 0.0,
+        }
+    }
+}
+
+impl ReactiveRainVisualizer {
+    fn reset(&mut self, seed: u64, width: usize, height: usize) {
+        self.drops.clear();
+        self.splashes.clear();
+        self.seed = seed;
+        self.serial = 0;
+        self.width = width;
+        self.height = height;
+        self.smoothed_energy = 0.0;
+        self.smoothed_high = 0.0;
+        self.smoothed_fall = 0.75;
+        self.smoothed_wind = 0.0;
+        self.beat_flash = 0.0;
+    }
+
+    fn make_drop(
+        &mut self,
+        width: usize,
+        height: usize,
+        bass: f32,
+        energy: f32,
+        fill: bool,
+    ) -> RainDrop {
+        let id = self.serial;
+        self.serial = self.serial.wrapping_add(1);
+        let salt = mix_u64(self.seed, id.wrapping_mul(0x9e37).wrapping_add(11));
+        let weight = unit_noise(self.seed, salt ^ 0x71);
+        let musical_weight = (weight * 0.55 + bass * 0.45).clamp(0.0, 1.0);
+        RainDrop {
+            x: unit_noise(self.seed, salt ^ 0x19) * width.saturating_sub(1) as f32,
+            y: if fill {
+                unit_noise(self.seed, salt ^ 0x33) * height.saturating_sub(1) as f32
+            } else {
+                -1.0 - unit_noise(self.seed, salt ^ 0x44) * 3.0
+            },
+            base_speed: 0.38 + unit_noise(self.seed, salt ^ 0x55) * 0.48,
+            trail_len: (1.0 + musical_weight * 2.6).round() as u8,
+            weight: musical_weight,
+            brightness: (0.12 + energy * 0.38 + unit_noise(self.seed, salt ^ 0x91) * 0.12)
+                .clamp(0.12, 0.95),
+        }
+    }
+
+    fn target_density(width: usize, height: usize, energy: f32, playing: bool) -> usize {
+        if !playing || energy < 0.015 {
+            return 0;
+        }
+        let area = width.saturating_mul(height);
+        let minimum = (width / 6).clamp(6, 18);
+        let maximum = (area / 22).clamp(minimum, 72);
+        minimum + ((maximum - minimum) as f32 * energy.powf(0.72)).round() as usize
+    }
+}
+
+impl VisualizerPlugin for ReactiveRainVisualizer {
+    fn plugin_id(&self) -> &'static str {
+        "viz.particle.rain_reactive"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Reactive Rain"
+    }
+
+    fn on_activate(&mut self, context: VisualizerContext) {
+        self.color = context.ansi_enabled;
+        self.drops.clear();
+        self.splashes.clear();
+    }
+
+    fn on_deactivate(&mut self) {}
+
+    fn render(&mut self, frame: &VisualizerFrameInput) -> Vec<Line<'static>> {
+        let width = frame.width.max(1) as usize;
+        let height = frame.height.max(1) as usize;
+        let seed = stable_seed(
+            frame
+                .track_path
+                .as_deref()
+                .or(frame.title.as_deref())
+                .unwrap_or("REACTIVE RAIN"),
+        );
+        if seed != self.seed || width != self.width || height != self.height {
+            self.reset(seed, width, height);
+        }
+
+        let mono = mono_level(frame);
+        let bands = frame.spectrum_bands.as_deref();
+        let bass = bass_energy(bands);
+        let mid = mid_energy(bands);
+        let high = high_energy(bands);
+        let playing = frame.status == "playing";
+        let raw_energy = if playing {
+            (mono * 0.55 + bass * 0.18 + mid * 0.17 + high * 0.10).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        self.smoothed_energy += (raw_energy - self.smoothed_energy) * 0.22;
+        self.smoothed_high += (high - self.smoothed_high) * 0.28;
+
+        if beat_onset(frame) {
+            self.beat_flash = 1.0;
+        } else {
+            self.beat_flash *= 0.62;
+        }
+
+        // A beat is a short acceleration, not a position jump.
+        let beat = frame.beat_strength.unwrap_or(0.0).clamp(0.0, 1.0);
+        let fall_target = if playing {
+            (0.72 + mono * 0.60 + mid * 0.30 + beat * 0.16) * 1.10
+        } else {
+            0.0
+        };
+        self.smoothed_fall += (fall_target - self.smoothed_fall) * 0.18;
+
+        let stereo = match (frame.level_left, frame.level_right) {
+            (Some(left), Some(right)) => (right - left).clamp(-1.0, 1.0),
+            _ => 0.0,
+        };
+        let high_wind = (frame.frame_index as f32 * 0.055).sin() * self.smoothed_high * 0.12;
+        let wind_target = stereo * (0.08 + self.smoothed_high * 0.12) + high_wind;
+        self.smoothed_wind += (wind_target - self.smoothed_wind) * 0.18;
+
+        let target = Self::target_density(width, height, self.smoothed_energy, playing);
+        if self.drops.is_empty() && target > 0 {
+            for _ in 0..target {
+                let drop = self.make_drop(width, height, bass, self.smoothed_energy, true);
+                self.drops.push(drop);
+            }
+        }
+
+        let mut impacts = Vec::new();
+        if playing {
+            for (index, drop) in self.drops.iter_mut().enumerate() {
+                drop.y += drop.base_speed * self.smoothed_fall;
+                drop.x = (drop.x + self.smoothed_wind * (0.9 + drop.weight * 0.4))
+                    .clamp(0.0, width.saturating_sub(1) as f32);
+                if drop.y >= height.saturating_sub(1) as f32 {
+                    impacts.push((index, drop.x.round() as i32, drop.brightness, drop.weight));
+                }
+            }
+        }
+
+        for (index, x, brightness, weight) in impacts.into_iter().rev() {
+            self.drops.swap_remove(index);
+            self.splashes.push(RainSplash {
+                x,
+                age: 0,
+                brightness,
+                bass: weight,
+                high,
+            });
+        }
+
+        // Density rises gently and drops retire only when they reach the ground.
+        let spawn_count = target.saturating_sub(self.drops.len()).min(3);
+        for _ in 0..spawn_count {
+            let drop = self.make_drop(width, height, bass, self.smoothed_energy, false);
+            self.drops.push(drop);
+        }
+
+        let mut canvas = Canvas::new(width, height);
+        let onset_flash = self.beat_flash * 0.42;
+        for drop in &self.drops {
+            let x = drop.x.round() as i32;
+            let y = drop.y.round() as i32;
+            if y < 0 || y >= height as i32 {
+                continue;
+            }
+            let brightness =
+                (drop.brightness + self.smoothed_high * 0.32 + onset_flash).clamp(0.0, 1.0);
+            let head = if drop.trail_len >= 3 {
+                '|'
+            } else if drop.trail_len == 2 {
+                ':'
+            } else {
+                '.'
+            };
+            canvas.set(
+                x,
+                y,
+                head,
+                rain_color(brightness, drop.weight, self.smoothed_high, self.color),
+            );
+            for trail in 1..=drop.trail_len {
+                let fade = brightness * (1.0 - trail as f32 / (drop.trail_len as f32 + 1.2));
+                let glyph = if trail == 1 && drop.trail_len >= 3 {
+                    ':'
+                } else {
+                    '\''
+                };
+                canvas.set_if_empty(
+                    x,
+                    y - i32::from(trail),
+                    glyph,
+                    rain_color(fade, drop.weight, self.smoothed_high, self.color),
+                );
+            }
+        }
+
+        let ground = height.saturating_sub(1) as i32;
+        for splash in &self.splashes {
+            let color = rain_color(
+                (splash.brightness + onset_flash).clamp(0.0, 1.0),
+                splash.bass,
+                self.smoothed_high.max(splash.high),
+                self.color,
+            );
+            if splash.age == 0 {
+                canvas.set(splash.x, ground, '*', color);
+            } else {
+                canvas.set_if_empty(splash.x - 1, ground, '.', color);
+                canvas.set_if_empty(splash.x + 1, ground, '.', color);
+            }
+        }
+        for splash in &mut self.splashes {
+            splash.age = splash.age.saturating_add(1);
+        }
+        self.splashes.retain(|splash| splash.age < 2);
+
+        canvas.into_lines()
+    }
+}
+
+fn rain_color(brightness: f32, bass: f32, high: f32, color: bool) -> Color {
+    let light = brightness.clamp(0.0, 1.0);
+    if !color {
+        return if light > 0.72 {
+            Color::White
+        } else if light > 0.34 {
+            Color::Gray
+        } else {
+            Color::DarkGray
+        };
+    }
+    // Deep blue for weight, cyan-white for bright high-frequency detail.
+    Color::Rgb(
+        (12.0 + light * 150.0 + high * 35.0) as u8,
+        (35.0 + light * 175.0 + high * 35.0) as u8,
+        (95.0 + light * 155.0 - bass * 12.0).clamp(0.0, 255.0) as u8,
+    )
+}
+
 macro_rules! particle_plugin {
     ($ty:ident, $style:expr, $id:expr, $name:expr, $title:expr) => {
         #[derive(Debug, Default)]
@@ -1162,13 +1422,6 @@ particle_plugin!(
     "viz.particle.shockwave_rings",
     "Shockwave Rings",
     "SHOCKWAVE RINGS"
-);
-particle_plugin!(
-    ReactiveRainVisualizer,
-    ParticleStyle::Rain,
-    "viz.particle.rain_reactive",
-    "Reactive Rain",
-    "REACTIVE RAIN"
 );
 particle_plugin!(
     OrbitalSystemVisualizer,
@@ -1219,3 +1472,65 @@ particle_plugin!(
     "Plasma Stream",
     "PLASMA STREAM"
 );
+
+#[cfg(test)]
+mod reactive_rain_tests {
+    use super::*;
+
+    fn frame(level: f32, band: u8) -> VisualizerFrameInput {
+        VisualizerFrameInput {
+            frame_index: 1,
+            width: 80,
+            height: 100,
+            status: "playing".into(),
+            position_s: 1.0,
+            duration_s: Some(60.0),
+            volume: 1.0,
+            speed: 1.0,
+            title: Some("Rain test".into()),
+            track_path: Some("rain-test.mp3".into()),
+            level_left: Some(level),
+            level_right: Some(level),
+            level_source: Some("test".into()),
+            spectrum_bands: Some(vec![band; 48]),
+            spectrum_source: Some("test".into()),
+            beat_strength: Some(0.0),
+            beat_is_onset: Some(false),
+            beat_bpm: Some(120.0),
+            beat_source: Some("test".into()),
+            waveform_min_left: None,
+            waveform_max_left: None,
+            waveform_min_right: None,
+            waveform_max_right: None,
+            waveform_source: None,
+            waveform_history: None,
+        }
+    }
+
+    #[test]
+    fn rain_drops_keep_moving_down_when_music_energy_changes() {
+        let mut rain = ReactiveRainVisualizer::default();
+        rain.render(&frame(0.2, 30));
+        for drop in &mut rain.drops {
+            drop.y = 10.0;
+        }
+        let before: Vec<f32> = rain.drops.iter().map(|drop| drop.y).collect();
+
+        rain.render(&frame(0.95, 255));
+
+        assert!(rain
+            .drops
+            .iter()
+            .zip(before)
+            .all(|(drop, old_y)| drop.y > old_y));
+    }
+
+    #[test]
+    fn silence_has_no_density_floor() {
+        assert_eq!(ReactiveRainVisualizer::target_density(80, 20, 0.0, true), 0);
+        assert_eq!(
+            ReactiveRainVisualizer::target_density(80, 20, 0.8, false),
+            0
+        );
+    }
+}
