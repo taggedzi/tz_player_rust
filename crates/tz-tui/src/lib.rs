@@ -542,7 +542,7 @@ fn help_lines() -> Vec<Line<'static>> {
         e1("PgUp / PgDn", "Page up / down"),
         e1("g", "Locate now-playing track"),
         section("Playlist"),
-        e2("a", "Add path", "d / Del", "Remove selected"),
+        e2("a", "Browse & add", "d / Del", "Remove selected"),
         e2("c", "Clear playlist", "m", "Refresh metadata"),
         e2("f", "Find", "Shift+U/D", "Reorder up/down"),
         section("View"),

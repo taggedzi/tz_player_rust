@@ -57,7 +57,7 @@ cargo build --release -p tz-player
 | [ / ] | Speed (`\` = 1.0x) |
 | r / s | Repeat cycle / shuffle |
 | f | Find (FTS, filters live as you type) |
-| a | Add path |
+| a | Browse & add files/folders |
 | d | Delete cursor item |
 | c | Clear playlist |
 | m | Refresh metadata |

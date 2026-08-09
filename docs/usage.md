@@ -54,7 +54,7 @@ cargo build --release -p tz-player
 | `[` / `]` | Speed (`\` = 1.0x) |
 | `r` / `s` | Repeat cycle / shuffle |
 | `f` | Find (FTS filter, live as you type) |
-| `a` | Add file or folder path |
+| `a` | Browse & add files/folders |
 | `d` / `Delete` | Remove selected |
 | `c` then `y`/`n` | Clear playlist |
 | `m` | Refresh metadata |
@@ -88,7 +88,9 @@ Analysis caches (envelope `E`, spectrum `S`, beat `B`, waveform `W`) fill in the
 
 ## Empty playlist
 
-Press `a`, type a path, Enter — or use `tz-player add` from the shell first.
+Press `a` to open the folder browser (arrows to navigate, Enter to open a
+folder or add a file, `a`/Space to add a highlighted folder recursively,
+Esc to cancel) — or use `tz-player add` from the shell first.
 
 ## Logging
 
