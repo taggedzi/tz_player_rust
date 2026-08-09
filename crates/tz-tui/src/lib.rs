@@ -17,7 +17,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Terminal;
 use tz_control::Command;
-use tz_core::AppRuntime;
+use tz_core::{AppRuntime, EditorFocus, EditorOverlay};
 use visualizers::{VisualizerFrameInput, VisualizerHost};
 
 /// Run the interactive TUI until quit.
@@ -129,6 +129,10 @@ async fn ui_loop(
 
         terminal
             .draw(|f| {
+                if runtime.input_mode == "editor" {
+                    draw_editor_screen(f, f.area(), runtime);
+                    return;
+                }
                 let root = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
@@ -398,10 +402,7 @@ fn draw_transport(f: &mut ratatui::Frame<'_>, area: Rect, snap: &tz_control::Tra
             state_style(snap.repeat_mode != "off"),
         ),
         Span::raw("  "),
-        Span::styled(
-            format!("shuf {shuffle_label}"),
-            state_style(snap.shuffle),
-        ),
+        Span::styled(format!("shuf {shuffle_label}"), state_style(snap.shuffle)),
         Span::raw(suffix),
     ])];
     if let Some(err) = &snap.error {
@@ -503,7 +504,12 @@ fn help_entry2(
 
 /// A single mnemonic/description, for entries whose description is too
 /// long to pair without overflowing `HELP_DESC_W`.
-fn help_entry1(key_style: Style, desc_style: Style, k: &'static str, d: &'static str) -> Line<'static> {
+fn help_entry1(
+    key_style: Style,
+    desc_style: Style,
+    k: &'static str,
+    d: &'static str,
+) -> Line<'static> {
     Line::from(vec![
         Span::raw("  "),
         Span::styled(format!("{k:<HELP_KEY_W$}"), key_style),
@@ -542,9 +548,15 @@ fn help_lines() -> Vec<Line<'static>> {
         e1("PgUp / PgDn", "Page up / down"),
         e1("g", "Locate now-playing track"),
         section("Playlist"),
-        e2("a", "Browse & add", "d / Del", "Remove selected"),
-        e2("c", "Clear playlist", "m", "Refresh metadata"),
-        e2("f", "Find", "Shift+U/D", "Reorder up/down"),
+        e2(
+            "a",
+            "Open playlist editor",
+            "d / Del",
+            "Edit playlist in editor",
+        ),
+        e2("c", "Open editor", "m", "Refresh metadata"),
+        e2("f", "Find", "F10", "Apply editor changes"),
+        e1("Ctrl+Up/Down", "Reorder in editor"),
         section("View"),
         e2("z", "Cycle visualizer", "i", "About / version"),
         e1("Shift+Z", "Hide/show visualizer pane"),
@@ -572,6 +584,155 @@ fn draw_help_overlay(f: &mut ratatui::Frame<'_>, area: Rect) {
             .border_style(Style::default().fg(Color::Yellow)),
     );
     f.render_widget(p, popup);
+}
+
+fn draw_editor_screen(f: &mut ratatui::Frame<'_>, area: Rect, runtime: &AppRuntime) {
+    let root = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Min(4),
+            Constraint::Length(2),
+        ])
+        .split(area);
+    f.render_widget(
+        Paragraph::new(" Playlist editor  |  Tab: switch pane  F10: Apply  Esc: cancel"),
+        root[0],
+    );
+    let panes = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
+        .split(root[1]);
+
+    let left_title = runtime
+        .browse_dir
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "Drives".into());
+    let left_visible = panes[0].height.saturating_sub(2).max(1) as usize;
+    let left_start = runtime
+        .browse_cursor
+        .saturating_sub(left_visible.saturating_sub(1));
+    let left_items = runtime
+        .browse_entries
+        .iter()
+        .enumerate()
+        .skip(left_start)
+        .take(left_visible)
+        .map(|(i, e)| {
+            let marker = if e.is_dir { "/" } else { "" };
+            let style = if runtime.editor_focus == EditorFocus::Files && i == runtime.browse_cursor
+            {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            ListItem::new(format!("{}{}", e.name, marker)).style(style)
+        })
+        .collect::<Vec<_>>();
+    f.render_widget(
+        List::new(left_items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" Files — {left_title} ")),
+        ),
+        panes[0],
+    );
+
+    let count = runtime.editor_draft_count().unwrap_or(0);
+    let right_visible = panes[1].height.saturating_sub(2).max(1) as usize;
+    let right_start = runtime
+        .editor_playlist_cursor
+        .saturating_sub(right_visible.saturating_sub(1));
+    let rows = runtime
+        .editor_fetch_rows(right_start, right_visible)
+        .unwrap_or_default();
+    let right_items = rows
+        .iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let absolute_index = right_start + i;
+            let mut label = row
+                .path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("?")
+                .to_string();
+            if row.missing {
+                label.push_str(" [missing]");
+            }
+            let style = if runtime.editor_focus == EditorFocus::Playlist
+                && absolute_index == runtime.editor_playlist_cursor
+            {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            ListItem::new(format!("{:>4} {}", absolute_index + 1, label)).style(style)
+        })
+        .collect::<Vec<_>>();
+    f.render_widget(
+        List::new(right_items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" Staged playlist ({count}) ")),
+        ),
+        panes[1],
+    );
+    let footer = match runtime.editor_overlay {
+        EditorOverlay::SaveName | EditorOverlay::Rename => format!("Name: {}", runtime.input_buffer),
+        EditorOverlay::Load => "Load: Up/Down choose, Enter load, Esc cancel".into(),
+        EditorOverlay::DeleteConfirm => "Delete selected saved playlist? y/n".into(),
+        EditorOverlay::PartialScanConfirm => "Add partial scan result? y/n".into(),
+        _ => "i insert  a append  d delete  Ctrl+Up/Down move  s save  l load  r rename  D delete saved".into(),
+    };
+    f.render_widget(
+        Paragraph::new(footer).block(Block::default().borders(Borders::TOP)),
+        root[2],
+    );
+    if runtime.editor_overlay == EditorOverlay::Help {
+        draw_help_overlay(f, area);
+        return;
+    }
+    if runtime.editor_overlay == EditorOverlay::Load {
+        let lists = runtime.editor_playlist_summaries().unwrap_or_default();
+        let items = lists
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                ListItem::new(format!(
+                    "{} {} ({})",
+                    if i == runtime.editor_load_cursor {
+                        ">"
+                    } else {
+                        " "
+                    },
+                    p.name,
+                    p.track_count
+                ))
+            })
+            .collect::<Vec<_>>();
+        let popup = centered_fixed_rect(
+            (area.width * 2 / 3).max(24).min(area.width),
+            (area.height * 2 / 3).max(6).min(area.height),
+            area,
+        );
+        f.render_widget(Clear, popup);
+        f.render_widget(
+            List::new(items).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Load playlist "),
+            ),
+            popup,
+        );
+    }
 }
 
 /// Folder-browser modal: a single-pane directory listing (dirs then media
@@ -697,6 +858,112 @@ async fn handle_key(
         return Ok(false);
     }
 
+    if runtime.input_mode == "editor" {
+        if runtime.editor_overlay == EditorOverlay::Help {
+            runtime.editor_overlay = EditorOverlay::None;
+            return Ok(false);
+        }
+        match runtime.editor_overlay {
+            EditorOverlay::SaveName | EditorOverlay::Rename => {
+                match code {
+                    KeyCode::Esc => runtime.editor_overlay = EditorOverlay::None,
+                    KeyCode::Backspace => {
+                        runtime.input_buffer.pop();
+                    }
+                    KeyCode::Enter => {
+                        let name = runtime.input_buffer.clone();
+                        let result = if runtime.editor_overlay == EditorOverlay::Rename {
+                            runtime.editor_commit_rename(name)
+                        } else {
+                            runtime.editor_commit_name(name, runtime.editor_save_as)
+                        };
+                        if let Err(e) = result {
+                            runtime.set_warning(e);
+                        }
+                    }
+                    KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
+                        runtime.input_buffer.push(c)
+                    }
+                    _ => {}
+                }
+                return Ok(false);
+            }
+            EditorOverlay::Load => {
+                match code {
+                    KeyCode::Esc => runtime.editor_overlay = EditorOverlay::None,
+                    KeyCode::Up | KeyCode::Char('k') => runtime.editor_move_load_cursor(-1),
+                    KeyCode::Down | KeyCode::Char('j') => runtime.editor_move_load_cursor(1),
+                    KeyCode::Enter => {
+                        if let Err(e) = runtime.editor_load_selected() {
+                            runtime.set_warning(e);
+                        }
+                    }
+                    _ => {}
+                }
+                return Ok(false);
+            }
+            EditorOverlay::DeleteConfirm
+            | EditorOverlay::PartialScanConfirm
+            | EditorOverlay::DiscardConfirm => {
+                match code {
+                    KeyCode::Char('y') | KeyCode::Char('Y') => {
+                        let _ = runtime.handle(Command::EditorConfirm { yes: true }).await;
+                    }
+                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                        let _ = runtime.handle(Command::EditorConfirm { yes: false }).await;
+                    }
+                    _ => {}
+                }
+                return Ok(false);
+            }
+            EditorOverlay::Help => {}
+            EditorOverlay::None => {}
+        }
+        if code == KeyCode::Char('?') && runtime.editor_overlay == EditorOverlay::None {
+            runtime.editor_overlay = EditorOverlay::Help;
+            return Ok(false);
+        }
+        let cmd = match code {
+            KeyCode::Esc => Some(Command::EditorCancel),
+            KeyCode::Tab => Some(Command::EditorTab),
+            KeyCode::Up if modifiers.contains(KeyModifiers::CONTROL) => Some(Command::EditorMoveUp),
+            KeyCode::Down if modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Command::EditorMoveDown)
+            }
+            KeyCode::Up | KeyCode::Char('k') => Some(Command::EditorUp),
+            KeyCode::Down | KeyCode::Char('j') => Some(Command::EditorDown),
+            KeyCode::PageUp => Some(Command::EditorPageUp),
+            KeyCode::PageDown => Some(Command::EditorPageDown),
+            KeyCode::Home => Some(Command::EditorHome),
+            KeyCode::End => Some(Command::EditorEnd),
+            KeyCode::Backspace => Some(Command::EditorParent),
+            KeyCode::Enter if modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Command::EditorApply)
+            }
+            KeyCode::Enter => Some(Command::EditorEnter),
+            KeyCode::Char('~') => Some(Command::EditorDrives),
+            KeyCode::Char('i') => Some(Command::EditorInsert),
+            KeyCode::Char('a') => Some(Command::EditorAppend),
+            KeyCode::Char('d') if !modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Command::EditorRemove)
+            }
+            KeyCode::Char('c') => Some(Command::EditorClear),
+            KeyCode::Delete => Some(Command::EditorRemove),
+            KeyCode::Char('s') => Some(Command::EditorSave),
+            KeyCode::Char('S') => Some(Command::EditorSaveAs),
+            KeyCode::Char('l') => Some(Command::EditorLoad),
+            KeyCode::Char('r') => Some(Command::EditorRename),
+            KeyCode::Char('D') => Some(Command::EditorDelete),
+            KeyCode::Char('q') => Some(Command::EditorCancel),
+            KeyCode::F(10) => Some(Command::EditorApply),
+            _ => None,
+        };
+        if let Some(cmd) = cmd {
+            let _ = runtime.handle(cmd).await;
+        }
+        return Ok(false);
+    }
+
     // Help overlay (any key dismisses except another ?)
     if runtime.input_mode == "help" {
         match code {
@@ -782,7 +1049,7 @@ async fn handle_key(
             runtime.set_status("Find mode");
         }
         KeyCode::Char('a') => {
-            let _ = runtime.handle(Command::RequestAddFolder).await;
+            let _ = runtime.handle(Command::EditorOpen).await;
         }
         // Shift+Z toggles pane visibility; must sit above the plain 'z'
         // cycle arm. Terminals vary on whether a shifted letter arrives as
@@ -885,10 +1152,13 @@ async fn handle_key(
             let _ = runtime.handle(Command::ToggleShuffle).await;
         }
         KeyCode::Char('d') | KeyCode::Delete => {
-            let _ = runtime.handle(Command::RemoveSelected).await;
+            let _ = runtime.handle(Command::EditorOpen).await;
+            runtime.editor_focus = EditorFocus::Playlist;
         }
         KeyCode::Char('c') => {
-            let _ = runtime.handle(Command::ClearPlaylist).await;
+            let _ = runtime.handle(Command::EditorOpen).await;
+            runtime.editor_focus = EditorFocus::Playlist;
+            let _ = runtime.handle(Command::EditorClear).await;
         }
         KeyCode::Char('m') => {
             let _ = runtime.handle(Command::RefreshMetadata).await;
@@ -1054,9 +1324,7 @@ mod tests {
         // test here.
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|f| draw_help_overlay(f, f.area()))
-            .unwrap();
+        terminal.draw(|f| draw_help_overlay(f, f.area())).unwrap();
         let text = buffer_text(&terminal.backend().buffer().clone());
 
         for needle in [
@@ -1066,7 +1334,7 @@ mod tests {
             "Toggle shuffle",
             "Reset speed to 1.0x",
             "Locate now-playing track",
-            "Remove selected",
+            "Edit playlist in editor",
             "Refresh metadata",
             "Reorder",
             "Cycle visualizer",
@@ -1106,10 +1374,44 @@ mod tests {
             .unwrap();
         let text = buffer_text(&terminal.backend().buffer().clone());
 
-        assert!(text.contains("alpha.mp3"), "expected both entries listed:\n{text}");
-        assert!(text.contains("beta.mp3"), "expected both entries listed:\n{text}");
+        assert!(
+            text.contains("alpha.mp3"),
+            "expected both entries listed:\n{text}"
+        );
+        assert!(
+            text.contains("beta.mp3"),
+            "expected both entries listed:\n{text}"
+        );
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn editor_screen_renders_both_files_and_staged_playlist_panes() {
+        let mut runtime = bare_test_runtime("editor_render").await;
+        let dir = runtime.paths.data_dir.clone();
+        std::fs::write(dir.join("alpha.mp3"), b"").unwrap();
+        runtime.last_browse_dir = Some(dir.clone());
+        runtime.handle(Command::EditorOpen).await.unwrap();
+        runtime.editor_focus = EditorFocus::Files;
+        runtime.browse_cursor = runtime
+            .browse_entries
+            .iter()
+            .position(|entry| entry.name == "alpha.mp3")
+            .unwrap();
+        runtime.handle(Command::EditorAppend).await.unwrap();
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| draw_editor_screen(f, f.area(), &runtime))
+            .unwrap();
+        let text = buffer_text(&terminal.backend().buffer().clone());
+        assert!(text.contains("Files"));
+        assert!(text.contains("Staged playlist (1)"));
+        assert!(text.contains("alpha.mp3"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1172,9 +1474,14 @@ mod tests {
         let mut viz = VisualizerHost::new(false);
         assert_eq!(runtime.playlist_count(), 3);
 
-        handle_key(&mut runtime, &mut viz, KeyCode::Char('f'), KeyModifiers::NONE)
-            .await
-            .unwrap();
+        handle_key(
+            &mut runtime,
+            &mut viz,
+            KeyCode::Char('f'),
+            KeyModifiers::NONE,
+        )
+        .await
+        .unwrap();
         for c in "alpha".chars() {
             handle_key(&mut runtime, &mut viz, KeyCode::Char(c), KeyModifiers::NONE)
                 .await
@@ -1194,21 +1501,46 @@ mod tests {
             .iter()
             .all(|r| r.path.to_string_lossy().contains("alpha")));
 
-        handle_key(&mut runtime, &mut viz, KeyCode::Backspace, KeyModifiers::NONE)
-            .await
-            .unwrap();
-        handle_key(&mut runtime, &mut viz, KeyCode::Backspace, KeyModifiers::NONE)
-            .await
-            .unwrap();
-        handle_key(&mut runtime, &mut viz, KeyCode::Backspace, KeyModifiers::NONE)
-            .await
-            .unwrap();
-        handle_key(&mut runtime, &mut viz, KeyCode::Backspace, KeyModifiers::NONE)
-            .await
-            .unwrap();
-        handle_key(&mut runtime, &mut viz, KeyCode::Backspace, KeyModifiers::NONE)
-            .await
-            .unwrap();
+        handle_key(
+            &mut runtime,
+            &mut viz,
+            KeyCode::Backspace,
+            KeyModifiers::NONE,
+        )
+        .await
+        .unwrap();
+        handle_key(
+            &mut runtime,
+            &mut viz,
+            KeyCode::Backspace,
+            KeyModifiers::NONE,
+        )
+        .await
+        .unwrap();
+        handle_key(
+            &mut runtime,
+            &mut viz,
+            KeyCode::Backspace,
+            KeyModifiers::NONE,
+        )
+        .await
+        .unwrap();
+        handle_key(
+            &mut runtime,
+            &mut viz,
+            KeyCode::Backspace,
+            KeyModifiers::NONE,
+        )
+        .await
+        .unwrap();
+        handle_key(
+            &mut runtime,
+            &mut viz,
+            KeyCode::Backspace,
+            KeyModifiers::NONE,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(
             runtime.playlist_count(),
@@ -1227,9 +1559,14 @@ mod tests {
 
         // Terminals vary on whether a shifted letter arrives as a bare
         // uppercase char or as Char('z') + SHIFT — cover both.
-        handle_key(&mut runtime, &mut viz, KeyCode::Char('Z'), KeyModifiers::NONE)
-            .await
-            .unwrap();
+        handle_key(
+            &mut runtime,
+            &mut viz,
+            KeyCode::Char('Z'),
+            KeyModifiers::NONE,
+        )
+        .await
+        .unwrap();
         assert!(runtime.visualizer_hidden);
 
         handle_key(
@@ -1250,49 +1587,38 @@ mod tests {
         let mut runtime = bare_test_runtime("browse_open_key").await;
         let mut viz = VisualizerHost::new(false);
 
-        handle_key(&mut runtime, &mut viz, KeyCode::Char('a'), KeyModifiers::NONE)
-            .await
-            .unwrap();
+        handle_key(
+            &mut runtime,
+            &mut viz,
+            KeyCode::Char('a'),
+            KeyModifiers::NONE,
+        )
+        .await
+        .unwrap();
 
-        assert_eq!(runtime.input_mode, "browse");
+        assert_eq!(runtime.input_mode, "editor");
 
         let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
     }
 
     #[tokio::test]
-    async fn browse_navigate_descend_select_and_close_via_keys() {
+    async fn editor_opens_and_cancels_via_keys() {
         let mut runtime = bare_test_runtime("browse_keys_flow").await;
-        let dir = runtime.paths.data_dir.clone();
-        let sub = dir.join("Album");
-        std::fs::create_dir_all(&sub).unwrap();
-        std::fs::write(sub.join("song.mp3"), b"").unwrap();
-        runtime.last_browse_dir = Some(dir.clone());
         let mut viz = VisualizerHost::new(false);
 
-        handle_key(&mut runtime, &mut viz, KeyCode::Char('a'), KeyModifiers::NONE)
+        handle_key(
+            &mut runtime,
+            &mut viz,
+            KeyCode::Char('a'),
+            KeyModifiers::NONE,
+        )
+        .await
+        .unwrap();
+        handle_key(&mut runtime, &mut viz, KeyCode::Esc, KeyModifiers::NONE)
             .await
             .unwrap();
-        assert_eq!(runtime.input_mode, "browse");
-
-        handle_key(&mut runtime, &mut viz, KeyCode::Enter, KeyModifiers::NONE)
-            .await
-            .unwrap();
-        assert_eq!(
-            runtime.browse_dir,
-            Some(sub.clone()),
-            "Enter should descend into Album"
-        );
-
-        handle_key(&mut runtime, &mut viz, KeyCode::Char('a'), KeyModifiers::NONE)
-            .await
-            .unwrap();
-        assert_eq!(
-            runtime.input_mode, "normal",
-            "'a' on a highlighted file adds and closes"
-        );
-        assert_eq!(runtime.playlist_count(), 1);
-
-        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(runtime.input_mode, "normal");
+        assert_eq!(runtime.playlist_count(), 0);
     }
 
     #[tokio::test]
@@ -1303,9 +1629,14 @@ mod tests {
         runtime.last_browse_dir = Some(dir.clone());
         let mut viz = VisualizerHost::new(false);
 
-        handle_key(&mut runtime, &mut viz, KeyCode::Char('a'), KeyModifiers::NONE)
-            .await
-            .unwrap();
+        handle_key(
+            &mut runtime,
+            &mut viz,
+            KeyCode::Char('a'),
+            KeyModifiers::NONE,
+        )
+        .await
+        .unwrap();
         assert_eq!(runtime.browse_dir, Some(dir.clone()));
         handle_key(&mut runtime, &mut viz, KeyCode::Esc, KeyModifiers::NONE)
             .await
@@ -1326,9 +1657,14 @@ mod tests {
         let mut viz = VisualizerHost::new(false);
         let before = viz.active_id();
 
-        handle_key(&mut runtime, &mut viz, KeyCode::Char('z'), KeyModifiers::NONE)
-            .await
-            .unwrap();
+        handle_key(
+            &mut runtime,
+            &mut viz,
+            KeyCode::Char('z'),
+            KeyModifiers::NONE,
+        )
+        .await
+        .unwrap();
 
         assert_ne!(viz.active_id(), before);
         assert!(!runtime.visualizer_hidden);

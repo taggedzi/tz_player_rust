@@ -57,9 +57,10 @@ cargo build --release -p tz-player
 | [ / ] | Speed (`\` = 1.0x) |
 | r / s | Repeat cycle / shuffle |
 | f | Find (FTS, filters live as you type) |
-| a | Browse & add files/folders |
-| d | Delete cursor item |
-| c | Clear playlist |
+| a | Open staged dual-pane playlist editor |
+| d / Delete | Open editor focused on playlist items |
+| c | Open editor with a staged clear |
+| F10 / Ctrl+Enter (editor) | Apply staged edits; stops playback first |
 | m | Refresh metadata |
 | z | Cycle visualizers (26 built-ins) |
 | Shift+Z | Hide/show visualizer pane (playlist fills the width) |
@@ -79,7 +80,7 @@ crates/
   tz-playback    # PlaybackBackend: Fake + VLC (dynamic libVLC FFI)
   tz-analysis    # FFmpeg/WAV analysis (envelope, spectrum, beat, waveform)
   tz-control     # structured Command + TransportSnapshot
-  tz-db          # SQLite schema v7 + stores + FTS
+  tz-db          # SQLite schema v8 + stores + FTS + editor drafts
   tz-tui         # ratatui UI + visualizer plugins
 ```
 

@@ -1,4 +1,5 @@
-//! Schema creation and migrations (Python SCHEMA_VERSION 7 parity baseline).
+//! Schema creation and migrations (Python-compatible playlist schema plus
+//! Rust editor draft storage).
 
 use rusqlite::{Connection, OptionalExtension};
 use std::path::Path;
@@ -6,7 +7,7 @@ use std::path::Path;
 use crate::error::DbError;
 
 /// Current schema version (matches Python tz-player at rewrite start).
-pub const SCHEMA_VERSION: i32 = 7;
+pub const SCHEMA_VERSION: i32 = 8;
 
 /// Open a SQLite connection with foreign keys enabled.
 pub fn open_connection(path: &Path) -> Result<Connection, DbError> {
@@ -63,6 +64,11 @@ pub fn create_schema(conn: &Connection) -> Result<(), DbError> {
     }
     if version == 6 {
         migrate_v6_to_v7(conn)?;
+        set_user_version(conn, 7)?;
+        version = 7;
+    }
+    if version == 7 {
+        migrate_v7_to_v8(conn)?;
         set_user_version(conn, SCHEMA_VERSION)?;
     }
 
@@ -473,6 +479,28 @@ fn migrate_v6_to_v7(conn: &Connection) -> Result<(), DbError> {
     Ok(())
 }
 
+fn migrate_v7_to_v8(conn: &Connection) -> Result<(), DbError> {
+    conn.execute_batch(
+        r#"
+        BEGIN IMMEDIATE;
+        CREATE TABLE IF NOT EXISTS playlist_editor_draft_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            path TEXT NOT NULL,
+            path_norm TEXT NOT NULL,
+            pos_key INTEGER NOT NULL,
+            added_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_editor_draft_session_pos
+            ON playlist_editor_draft_items(session_id, pos_key);
+        CREATE INDEX IF NOT EXISTS idx_editor_draft_session_path
+            ON playlist_editor_draft_items(session_id, path_norm);
+        COMMIT;
+        "#,
+    )?;
+    Ok(())
+}
+
 fn fts_has_year_column(conn: &Connection) -> Result<bool, DbError> {
     // fts5 virtual tables expose columns via pragma table_info.
     let mut stmt = conn.prepare("PRAGMA table_info(playlist_search)")?;
@@ -521,7 +549,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_db_reaches_schema_v7() {
+    fn fresh_db_reaches_schema_v8() {
         let path = temp_db_path();
         let conn = open_database(&path).expect("open");
         assert_eq!(user_version(&conn).unwrap(), SCHEMA_VERSION);
@@ -530,6 +558,7 @@ mod tests {
         assert!(table_exists(&conn, "analysis_cache_entries").unwrap());
         assert!(table_exists(&conn, "analysis_beat_frames").unwrap());
         assert!(table_exists(&conn, "analysis_waveform_proxy_frames").unwrap());
+        assert!(table_exists(&conn, "playlist_editor_draft_items").unwrap());
         let _ = std::fs::remove_file(&path);
     }
 

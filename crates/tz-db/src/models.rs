@@ -18,6 +18,29 @@ pub struct PlaylistRow {
     pub meta_error: Option<String>,
 }
 
+/// Summary row used by the saved-playlist chooser.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaylistSummary {
+    pub id: i64,
+    pub name: String,
+    pub track_count: usize,
+    pub updated_at: i64,
+}
+
+/// Joined transient editor-draft row. Unlike [`PlaylistRow`], the item may
+/// refer to a path that has not yet been inserted into `tracks`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DraftRow {
+    pub item_id: i64,
+    pub pos_key: i64,
+    pub path: PathBuf,
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub missing: bool,
+}
+
 /// Minimal track record for metadata refresh workflows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackRecord {

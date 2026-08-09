@@ -7,10 +7,13 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension, TransactionBehavior};
 
 use crate::error::DbError;
-use crate::models::{MoveDirection, PlaylistRow, TrackMeta, TrackMetaSnapshot, TrackRecord};
+use crate::models::{
+    DraftRow, MoveDirection, PlaylistRow, PlaylistSummary, TrackMeta, TrackMetaSnapshot,
+    TrackRecord,
+};
 use crate::path_util::{normalize_path, stat_path};
 use crate::{create_schema, ensure_playlist_search_fts, open_connection};
 
@@ -69,6 +72,372 @@ impl PlaylistStore {
         }
         conn.execute("INSERT INTO playlists (name) VALUES (?1)", [name])?;
         Ok(conn.last_insert_rowid())
+    }
+
+    /// List user-visible playlists. The caller can exclude its protected
+    /// working playlist by id; transient editor rows are never stored here.
+    pub fn list_playlists(&self) -> Result<Vec<PlaylistSummary>, DbError> {
+        let conn = self.connect()?;
+        let mut stmt = conn.prepare(
+            "SELECT p.id, p.name, p.updated_at,
+                    (SELECT COUNT(*) FROM playlist_items i WHERE i.playlist_id = p.id)
+             FROM playlists p ORDER BY lower(p.name), p.id",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(PlaylistSummary {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    updated_at: row.get(2)?,
+                    track_count: row.get::<_, i64>(3)? as usize,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn playlist_name(&self, playlist_id: i64) -> Result<Option<String>, DbError> {
+        let conn = self.connect()?;
+        Ok(conn
+            .query_row(
+                "SELECT name FROM playlists WHERE id = ?1",
+                [playlist_id],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn find_playlist_by_name_ci(&self, name: &str) -> Result<Option<i64>, DbError> {
+        let conn = self.connect()?;
+        Ok(conn
+            .query_row(
+                "SELECT id FROM playlists WHERE lower(name) = lower(?1) ORDER BY id LIMIT 1",
+                [name],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn rename_playlist(&self, playlist_id: i64, name: &str) -> Result<(), DbError> {
+        let mut conn = self.connect()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let conflict: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM playlists WHERE lower(name) = lower(?1) AND id != ?2 LIMIT 1",
+                params![name, playlist_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if conflict.is_some() {
+            return Err(DbError::Schema(format!(
+                "playlist name already exists: {name}"
+            )));
+        }
+        let changed = tx.execute(
+            "UPDATE playlists SET name = ?1, updated_at = ?2 WHERE id = ?3",
+            params![name, unix_now(), playlist_id],
+        )?;
+        if changed == 0 {
+            return Err(DbError::Schema("playlist does not exist".into()));
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn delete_playlist(&self, playlist_id: i64) -> Result<(), DbError> {
+        let conn = self.connect()?;
+        let changed = conn.execute("DELETE FROM playlists WHERE id = ?1", [playlist_id])?;
+        if changed == 0 {
+            return Err(DbError::Schema("playlist does not exist".into()));
+        }
+        Ok(())
+    }
+
+    /// Replace a session draft with the ordered contents of a playlist.
+    pub fn draft_from_playlist(&self, session_id: &str, playlist_id: i64) -> Result<(), DbError> {
+        let mut conn = self.connect()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "DELETE FROM playlist_editor_draft_items WHERE session_id = ?1",
+            [session_id],
+        )?;
+        tx.execute(
+            "INSERT INTO playlist_editor_draft_items (session_id, path, path_norm, pos_key)
+             SELECT ?1, t.path, t.path_norm,
+                    ROW_NUMBER() OVER (ORDER BY pi.pos_key) * ?2
+             FROM playlist_items pi JOIN tracks t ON t.id = pi.track_id
+             WHERE pi.playlist_id = ?3",
+            params![session_id, POS_STEP, playlist_id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn draft_count(&self, session_id: &str) -> Result<usize, DbError> {
+        let conn = self.connect()?;
+        Ok(conn.query_row(
+            "SELECT COUNT(*) FROM playlist_editor_draft_items WHERE session_id = ?1",
+            [session_id],
+            |row| row.get::<_, i64>(0),
+        )? as usize)
+    }
+
+    pub fn fetch_draft_window(
+        &self,
+        session_id: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<DraftRow>, DbError> {
+        let conn = self.connect()?;
+        let mut stmt = conn.prepare(
+            "SELECT d.id, d.pos_key, d.path, tm.title, tm.artist, tm.album,
+                    tm.duration_ms, CASE WHEN t.id IS NULL THEN 1 ELSE 0 END
+             FROM playlist_editor_draft_items d
+             LEFT JOIN tracks t ON t.path_norm = d.path_norm
+             LEFT JOIN track_meta tm ON tm.track_id = t.id
+             WHERE d.session_id = ?1 ORDER BY d.pos_key
+             LIMIT ?2 OFFSET ?3",
+        )?;
+        let rows = stmt
+            .query_map(params![session_id, limit as i64, offset as i64], |row| {
+                Ok(DraftRow {
+                    item_id: row.get(0)?,
+                    pos_key: row.get(1)?,
+                    path: PathBuf::from(row.get::<_, String>(2)?),
+                    title: row.get(3)?,
+                    artist: row.get(4)?,
+                    album: row.get(5)?,
+                    duration_ms: row.get(6)?,
+                    missing: row.get::<_, i64>(7)? != 0,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn append_draft_paths(
+        &self,
+        session_id: &str,
+        paths: &[PathBuf],
+    ) -> Result<usize, DbError> {
+        if paths.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = self.connect()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let max_pos: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(pos_key), 0) FROM playlist_editor_draft_items WHERE session_id = ?1",
+            [session_id],
+            |row| row.get(0),
+        )?;
+        insert_draft_paths(&tx, session_id, paths, max_pos)?;
+        tx.commit()?;
+        Ok(paths.len())
+    }
+
+    pub fn insert_draft_paths(
+        &self,
+        session_id: &str,
+        index: usize,
+        paths: &[PathBuf],
+    ) -> Result<usize, DbError> {
+        if paths.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = self.connect()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let before: Option<i64> = tx
+            .query_row(
+                "SELECT pos_key FROM playlist_editor_draft_items WHERE session_id = ?1
+                 ORDER BY pos_key LIMIT 1 OFFSET ?2",
+                params![session_id, index as i64],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let after: i64 = if index == 0 {
+            0
+        } else {
+            tx.query_row(
+                "SELECT pos_key FROM playlist_editor_draft_items WHERE session_id = ?1
+                 ORDER BY pos_key LIMIT 1 OFFSET ?2",
+                params![session_id, (index - 1) as i64],
+                |row| row.get(0),
+            )
+            .unwrap_or(0)
+        };
+        let upper = before.unwrap_or(after.saturating_add(POS_STEP));
+        let gap = upper.saturating_sub(after);
+        if gap <= paths.len() as i64 {
+            renumber_draft_tx(
+                &tx,
+                session_id,
+                POS_STEP.saturating_mul(paths.len() as i64 + 1),
+            )?;
+        }
+        let (lower, upper) = draft_bounds_tx(&tx, session_id, index)?;
+        let step = ((upper - lower) / (paths.len() as i64 + 1)).max(1);
+        for (i, path) in paths.iter().enumerate() {
+            insert_draft_path_tx(&tx, session_id, path, lower + step * (i as i64 + 1))?;
+        }
+        tx.commit()?;
+        Ok(paths.len())
+    }
+
+    pub fn remove_draft_at(&self, session_id: &str, index: usize) -> Result<bool, DbError> {
+        let conn = self.connect()?;
+        let id: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM playlist_editor_draft_items WHERE session_id = ?1
+                 ORDER BY pos_key LIMIT 1 OFFSET ?2",
+                params![session_id, index as i64],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(id) = id else { return Ok(false) };
+        Ok(conn.execute(
+            "DELETE FROM playlist_editor_draft_items WHERE id = ?1",
+            [id],
+        )? > 0)
+    }
+
+    pub fn move_draft_at(&self, session_id: &str, index: usize, up: bool) -> Result<bool, DbError> {
+        let mut conn = self.connect()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let target: Option<(i64, i64)> = tx
+            .query_row(
+                "SELECT id, pos_key FROM playlist_editor_draft_items WHERE session_id = ?1
+                 ORDER BY pos_key LIMIT 1 OFFSET ?2",
+                params![session_id, index as i64],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((target_id, target_pos)) = target else {
+            return Ok(false);
+        };
+        let neighbor_index = if up {
+            index.saturating_sub(1)
+        } else {
+            index + 1
+        };
+        if up && index == 0 {
+            return Ok(false);
+        }
+        let neighbor: Option<(i64, i64)> = tx
+            .query_row(
+                "SELECT id, pos_key FROM playlist_editor_draft_items WHERE session_id = ?1
+                 ORDER BY pos_key LIMIT 1 OFFSET ?2",
+                params![session_id, neighbor_index as i64],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((neighbor_id, neighbor_pos)) = neighbor else {
+            return Ok(false);
+        };
+        tx.execute(
+            "UPDATE playlist_editor_draft_items SET pos_key = ?1 WHERE id = ?2",
+            params![neighbor_pos, target_id],
+        )?;
+        tx.execute(
+            "UPDATE playlist_editor_draft_items SET pos_key = ?1 WHERE id = ?2",
+            params![target_pos, neighbor_id],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    pub fn clear_draft(&self, session_id: &str) -> Result<(), DbError> {
+        let conn = self.connect()?;
+        conn.execute(
+            "DELETE FROM playlist_editor_draft_items WHERE session_id = ?1",
+            [session_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn cleanup_editor_drafts(&self) -> Result<(), DbError> {
+        let conn = self.connect()?;
+        conn.execute("DELETE FROM playlist_editor_draft_items", [])?;
+        Ok(())
+    }
+
+    pub fn load_draft_from_playlist(
+        &self,
+        session_id: &str,
+        playlist_id: i64,
+    ) -> Result<(), DbError> {
+        self.draft_from_playlist(session_id, playlist_id)
+    }
+
+    pub fn replace_playlist_from_draft(
+        &self,
+        working_playlist_id: i64,
+        session_id: &str,
+    ) -> Result<(), DbError> {
+        let mut conn = self.connect()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "DELETE FROM playlist_items WHERE playlist_id = ?1",
+            [working_playlist_id],
+        )?;
+        insert_draft_into_playlist_tx(&tx, session_id, working_playlist_id)?;
+        tx.execute(
+            "UPDATE playlists SET updated_at = ?1 WHERE id = ?2",
+            params![unix_now(), working_playlist_id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn save_playlist_from_draft(
+        &self,
+        session_id: &str,
+        name: &str,
+        target_id: Option<i64>,
+    ) -> Result<i64, DbError> {
+        let mut conn = self.connect()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let conflict: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM playlists WHERE lower(name) = lower(?1) LIMIT 1",
+                [name],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let playlist_id = match (target_id, conflict) {
+            (Some(id), Some(found)) if id == found => id,
+            (Some(_), Some(_)) => {
+                return Err(DbError::Schema(format!(
+                    "playlist name already exists: {name}"
+                )))
+            }
+            (Some(id), None) => {
+                tx.execute(
+                    "UPDATE playlists SET name = ?1 WHERE id = ?2",
+                    params![name, id],
+                )?;
+                id
+            }
+            (None, Some(_)) => {
+                return Err(DbError::Schema(format!(
+                    "playlist name already exists: {name}"
+                )))
+            }
+            (None, None) => {
+                tx.execute("INSERT INTO playlists (name) VALUES (?1)", [name])?;
+                tx.last_insert_rowid()
+            }
+        };
+        tx.execute(
+            "DELETE FROM playlist_items WHERE playlist_id = ?1",
+            [playlist_id],
+        )?;
+        insert_draft_into_playlist_tx(&tx, session_id, playlist_id)?;
+        tx.execute(
+            "UPDATE playlists SET updated_at = ?1 WHERE id = ?2",
+            params![unix_now(), playlist_id],
+        )?;
+        tx.commit()?;
+        Ok(playlist_id)
     }
 
     pub fn clear_playlist(&self, playlist_id: i64) -> Result<(), DbError> {
@@ -834,6 +1203,128 @@ fn get_track_id(conn: &Connection, path_norm: &str) -> Result<Option<i64>, DbErr
     Ok(id)
 }
 
+fn insert_draft_path_tx(
+    tx: &rusqlite::Transaction<'_>,
+    session_id: &str,
+    path: &Path,
+    pos_key: i64,
+) -> Result<(), DbError> {
+    let path_value = path.to_string_lossy().to_string();
+    let path_norm = normalize_path(path);
+    tx.execute(
+        "INSERT INTO playlist_editor_draft_items (session_id, path, path_norm, pos_key)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![session_id, path_value, path_norm, pos_key],
+    )?;
+    Ok(())
+}
+
+fn insert_draft_paths(
+    tx: &rusqlite::Transaction<'_>,
+    session_id: &str,
+    paths: &[PathBuf],
+    start_pos: i64,
+) -> Result<(), DbError> {
+    let mut pos = if start_pos == 0 {
+        POS_STEP
+    } else {
+        start_pos + POS_STEP
+    };
+    for path in paths {
+        insert_draft_path_tx(tx, session_id, path, pos)?;
+        pos += POS_STEP;
+    }
+    Ok(())
+}
+
+fn draft_bounds_tx(
+    tx: &rusqlite::Transaction<'_>,
+    session_id: &str,
+    index: usize,
+) -> Result<(i64, i64), DbError> {
+    let lower: i64 = if index == 0 {
+        0
+    } else {
+        tx.query_row(
+            "SELECT pos_key FROM playlist_editor_draft_items WHERE session_id = ?1
+             ORDER BY pos_key LIMIT 1 OFFSET ?2",
+            params![session_id, (index - 1) as i64],
+            |row| row.get(0),
+        )?
+    };
+    let upper: Option<i64> = tx
+        .query_row(
+            "SELECT pos_key FROM playlist_editor_draft_items WHERE session_id = ?1
+             ORDER BY pos_key LIMIT 1 OFFSET ?2",
+            params![session_id, index as i64],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok((lower, upper.unwrap_or(lower.saturating_add(POS_STEP))))
+}
+
+fn renumber_draft_tx(
+    tx: &rusqlite::Transaction<'_>,
+    session_id: &str,
+    step: i64,
+) -> Result<(), DbError> {
+    let ids: Vec<i64> = {
+        let mut stmt = tx.prepare(
+            "SELECT id FROM playlist_editor_draft_items WHERE session_id = ?1 ORDER BY pos_key",
+        )?;
+        let result = stmt
+            .query_map([session_id], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        result
+    };
+    for (index, id) in ids.into_iter().enumerate() {
+        tx.execute(
+            "UPDATE playlist_editor_draft_items SET pos_key = ?1 WHERE id = ?2",
+            params![step.saturating_mul(index as i64 + 1), id],
+        )?;
+    }
+    Ok(())
+}
+
+fn ensure_track_id_tx(tx: &rusqlite::Transaction<'_>, path: &Path) -> Result<i64, DbError> {
+    let path_value = path.to_string_lossy().to_string();
+    let path_norm = normalize_path(path);
+    if let Some(id) = get_track_id(tx, &path_norm)? {
+        return Ok(id);
+    }
+    let (mtime_ns, size_bytes) = stat_path(path);
+    tx.execute(
+        "INSERT OR IGNORE INTO tracks (path, path_norm, mtime_ns, size_bytes)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![path_value, path_norm, mtime_ns, size_bytes],
+    )?;
+    get_track_id(tx, &normalize_path(path))?.ok_or_else(|| {
+        DbError::Schema(format!("failed to create track row for {}", path.display()))
+    })
+}
+
+fn insert_draft_into_playlist_tx(
+    tx: &rusqlite::Transaction<'_>,
+    session_id: &str,
+    playlist_id: i64,
+) -> Result<(), DbError> {
+    let mut stmt = tx.prepare(
+        "SELECT path FROM playlist_editor_draft_items WHERE session_id = ?1 ORDER BY pos_key",
+    )?;
+    let mut rows = stmt.query([session_id])?;
+    let mut pos = POS_STEP;
+    while let Some(row) = rows.next()? {
+        let path = PathBuf::from(row.get::<_, String>(0)?);
+        let track_id = ensure_track_id_tx(tx, &path)?;
+        tx.execute(
+            "INSERT INTO playlist_items (playlist_id, track_id, pos_key) VALUES (?1, ?2, ?3)",
+            params![playlist_id, track_id, pos],
+        )?;
+        pos += POS_STEP;
+    }
+    Ok(())
+}
+
 fn has_playlist_search_fts(conn: &Connection) -> Result<bool, DbError> {
     let found: Option<i64> = conn
         .query_row(
@@ -1188,5 +1679,56 @@ mod tests {
         let b = store.ensure_playlist("Default").unwrap();
         assert_eq!(a, b);
         let _ = fs::remove_file(&db);
+    }
+
+    #[test]
+    fn draft_is_windowed_editable_and_can_apply() {
+        let (store, _db, pid, dir) = store_with_tracks(3);
+        let session = "test-session";
+        store.draft_from_playlist(session, pid).unwrap();
+        assert_eq!(store.draft_count(session).unwrap(), 3);
+        let first = store.fetch_draft_window(session, 0, 10).unwrap();
+        assert_eq!(first.len(), 3);
+        assert!(first[0].path.ends_with("track_0.mp3"));
+
+        let extra = dir.join("extra.mp3");
+        touch(&extra);
+        store
+            .append_draft_paths(session, std::slice::from_ref(&extra))
+            .unwrap();
+        store
+            .insert_draft_paths(session, 1, std::slice::from_ref(&extra))
+            .unwrap();
+        assert_eq!(store.draft_count(session).unwrap(), 5);
+        assert!(store.move_draft_at(session, 2, true).unwrap());
+        assert!(store.remove_draft_at(session, 0).unwrap());
+        assert_eq!(store.draft_count(session).unwrap(), 4);
+
+        store.replace_playlist_from_draft(pid, session).unwrap();
+        assert_eq!(store.count(pid).unwrap(), 4);
+        store.clear_draft(session).unwrap();
+        assert_eq!(store.draft_count(session).unwrap(), 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saved_playlist_crud_and_name_conflicts_are_transactional() {
+        let (store, _db, pid, dir) = store_with_tracks(2);
+        let session = "save-session";
+        store.draft_from_playlist(session, pid).unwrap();
+        let saved = store
+            .save_playlist_from_draft(session, "Road Trip", None)
+            .unwrap();
+        assert_ne!(saved, pid);
+        assert!(store
+            .save_playlist_from_draft(session, "road trip", None)
+            .is_err());
+        store.rename_playlist(saved, "Road Trip Updated").unwrap();
+        assert_eq!(
+            store.playlist_name(saved).unwrap().as_deref(),
+            Some("Road Trip Updated")
+        );
+        assert!(store.delete_playlist(saved).is_ok());
+        let _ = fs::remove_dir_all(&dir);
     }
 }

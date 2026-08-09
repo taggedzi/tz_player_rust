@@ -15,7 +15,10 @@ pub use levels::{AnalysisSample, LevelSample, LevelService, LevelSource};
 pub use metadata::{read_track_meta, refresh_playlist_metadata};
 pub use paths::{app_paths, app_paths_or_cwd, AppPaths};
 pub use player::{PlayerError, PlayerService, PlayerState, RepeatMode};
-pub use runtime::{list_dir, open_runtime, AppRuntime, FsEntry, RuntimeError, StatusLevel};
+pub use runtime::{
+    list_dir, open_runtime, AppRuntime, EditorFocus, EditorOverlay, FsEntry, RuntimeError,
+    StatusLevel,
+};
 pub use state::{load_state, load_state_with_notice, save_state, AppState};
 
 /// Speed limits (ADR-0003 / Python parity).

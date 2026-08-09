@@ -43,7 +43,7 @@ When behavior is ambiguous, prefer **Python runtime behavior + `_ref_tz_player` 
 | Fake backend | Required for tests + fallback when VLC fails | CI and safe degradation |
 | TUI | **ratatui + crossterm** | Keyboard-first terminal UI |
 | CLI | **clap** | `doctor`, `setup`, `paths`, `add`, `list`, default TUI |
-| DB | **SQLite schema v7** baseline + **FTS5** with LIKE fallback | Python-compatible analysis/playlist model |
+| DB | **SQLite schema v8** + **FTS5** with LIKE fallback | Python-compatible analysis/playlist model plus transient editor drafts |
 | Metadata tags | **lofty** | Embedded tags + cover art for Cover ASCII |
 | Config/state identity | App id **`tz-player-rs`** (org `taggedzi`) | Avoid corrupting Python `tz-player` data — see [ADR-0002](adr/ADR-0002-data-directory-identity.md) |
 | Control boundary | Structured **`Command` + snapshots** in `tz-control` | Headless / multi-frontend later |
@@ -187,7 +187,7 @@ Phases are sequential for dependencies but many sub-tasks inside a phase can be 
 
 | Deliverable | Done when |
 |-------------|-----------|
-| Schema v7 migrations | Fresh DB creates; older DBs migrate |
+| Schema v8 migrations | Fresh DB creates; older DBs migrate |
 | FTS5 + triggers + LIKE fallback | Search tests pass |
 | `PlaylistStore` API parity | add/remove/reorder/nav/search/metadata |
 | Sparse `pos_key` (`POS_STEP = 10_000`) | Reorder stable |

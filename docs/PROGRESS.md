@@ -1,6 +1,6 @@
 # Implementation progress
 
-Last updated: 2026-08-08
+Last updated: 2026-08-09
 
 **Full conversion plan (actionable, AI-consumable):** [`CONVERSION_PLAN.md`](CONVERSION_PLAN.md)
 
@@ -9,10 +9,10 @@ Last updated: 2026-08-08
 | Phase | Status | Notes |
 |-------|--------|-------|
 | 0 Foundation | **Done** | Cargo workspace, CI, ADRs, SPEC, media split |
-| 1 DB + state | **Done** | Schema v7, FTS5, `PlaylistStore`, `AppState` |
+| 1 DB + state | **Done** | Schema v8, FTS5, `PlaylistStore`, transient editor drafts, `AppState` |
 | 2 Playback | **Done** | Fake + VLC dynamic libVLC FFI |
 | 3 Control API | **Done** | Structured `Command` + `AppRuntime` |
-| 4 TUI | **Done** | ratatui playlist, transport, visualizer pane, find/add/clear, help |
+| 4 TUI | **Done** | ratatui playlist, transport, visualizer pane, find, staged dual-pane playlist editor, help |
 | 5 Metadata | **Done** | lofty tags + embedded cover for Cover ASCII |
 | 6 Analysis | **Done** | Envelope + spectrum + beat + waveform-proxy caches via `LevelService` |
 | 7 Visualizers | **Done (full built-in pack)** | 26 plugins: spectrum, matrix×3, waveform×2, hackscope, typography, cover×2, particle pack×11 |
@@ -34,8 +34,9 @@ cargo run -p tz-player -- doctor
 | Key | Action |
 |-----|--------|
 | `f` | Find (FTS filter, live as you type) |
-| `a` | Browse & add (navigate, Enter opens, Space adds) |
-| `c` then `y`/`n` | Clear playlist confirm |
+| `a` | Open staged dual-pane playlist editor |
+| `d` / `Delete` | Open editor focused on the playlist pane |
+| `F10` / `Ctrl+Enter` | Apply staged editor changes and stop playback |
 | `z` | Cycle visualizers |
 | `Shift+Z` | Hide/show visualizer pane |
 | `g` | Locate now-playing track |

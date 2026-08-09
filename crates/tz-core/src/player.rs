@@ -390,16 +390,31 @@ impl PlayerService {
 
     pub async fn stop(&mut self) -> Result<(), PlayerError> {
         self.stop_requested = true;
-        self.engine
-            .as_backend_mut()
-            .stop()
-            .await
-            .map_err(PlayerError::Playback)?;
+        if let Err(e) = self.engine.as_backend_mut().stop().await {
+            self.stop_requested = false;
+            return Err(PlayerError::Playback(e));
+        }
         let mut s = self.state.lock().await;
         s.status = BackendStatus::Stopped;
         s.position_ms = 0;
         self.real_position_ms = 0;
         self.real_observed_at = None;
+        Ok(())
+    }
+
+    /// Stop playback and clear the active transport context. Playlist editing
+    /// uses this transactional boundary so a replaced list cannot retain a
+    /// stale item id or path.
+    pub async fn stop_and_clear_context(&mut self) -> Result<(), PlayerError> {
+        self.stop().await?;
+        let mut s = self.state.lock().await;
+        s.playlist_id = None;
+        s.item_id = None;
+        s.track_path = None;
+        s.title = None;
+        s.artist = None;
+        s.album = None;
+        s.duration_ms = 0;
         Ok(())
     }
 

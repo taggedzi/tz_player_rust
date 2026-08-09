@@ -110,7 +110,10 @@ impl AnalysisCachePruner {
                 if protected_ids.contains(&id) {
                     continue;
                 }
-                tx.execute("DELETE FROM analysis_cache_entries WHERE id = ?1", params![id])?;
+                tx.execute(
+                    "DELETE FROM analysis_cache_entries WHERE id = ?1",
+                    params![id],
+                )?;
                 entries_pruned += 1;
                 total_bytes = (total_bytes - byte_size).max(0);
             }

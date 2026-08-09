@@ -54,9 +54,12 @@ cargo build --release -p tz-player
 | `[` / `]` | Speed (`\` = 1.0x) |
 | `r` / `s` | Repeat cycle / shuffle |
 | `f` | Find (FTS filter, live as you type) |
-| `a` | Browse & add files/folders |
-| `d` / `Delete` | Remove selected |
-| `c` then `y`/`n` | Clear playlist |
+| `a` | Open staged dual-pane editor |
+| `d` / `Delete` | Open the staged playlist editor (select an item, then remove/apply) |
+| `c` | Open editor with a staged clear (Apply to commit, Esc to undo) |
+| `F10` / `Ctrl+Enter` (editor) | Apply staged edits; playback stops first |
+| `Tab`, `i`, `a`, `d`, `Ctrl+↑/↓` (editor) | Switch panes, insert, append, remove, reorder |
+| `s`, `S`, `l`, `r`, `D` (editor) | Save, save-as, load, rename, delete saved playlist |
 | `m` | Refresh metadata |
 | `z` | Cycle visualizers |
 | `Shift+Z` | Hide/show visualizer pane (playlist fills the width) |

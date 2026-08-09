@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tz_control::{Command, ControlError, TransportSnapshot};
-use tz_db::{MoveDirection, PlaylistRow, PlaylistStore};
+use tz_db::{DraftRow, MoveDirection, PlaylistRow, PlaylistStore};
 use tz_playback::{BackendKind, BackendStatus};
 
 use crate::levels::LevelService;
@@ -28,6 +28,30 @@ pub enum StatusLevel {
     Error,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorFocus {
+    Files,
+    Playlist,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorOverlay {
+    None,
+    Help,
+    SaveName,
+    Load,
+    Rename,
+    DeleteConfirm,
+    PartialScanConfirm,
+    DiscardConfirm,
+}
+
+#[derive(Debug)]
+struct ScanResult {
+    paths: Vec<PathBuf>,
+    warnings: Vec<String>,
+}
+
 /// Headless-capable app session used by TUI and CLI.
 pub struct AppRuntime {
     pub paths: AppPaths,
@@ -45,7 +69,7 @@ pub struct AppRuntime {
     pub find_query: String,
     pub find_ids: Option<Vec<i64>>,
     pub confirm_clear: bool,
-    /// "normal" | "find" | "browse" | "help"
+    /// "normal" | "find" | "browse" | "editor" | "help"
     pub input_mode: String,
     pub input_buffer: String,
     /// Current directory shown by the folder-browser modal. `None` means
@@ -58,6 +82,20 @@ pub struct AppRuntime {
     /// Not persisted to `AppState` — the first open of a run always starts
     /// at the current working directory.
     pub last_browse_dir: Option<PathBuf>,
+    pub editor_session: Option<String>,
+    pub editor_focus: EditorFocus,
+    pub editor_playlist_cursor: usize,
+    pub editor_playlist_scroll: usize,
+    pub editor_saved_id: Option<i64>,
+    pub editor_saved_name: Option<String>,
+    pub editor_load_cursor: usize,
+    pub editor_overlay: EditorOverlay,
+    pub editor_pending_name: String,
+    pub editor_save_as: bool,
+    pub editor_pending_paths: Option<Vec<PathBuf>>,
+    pub editor_pending_insert: Option<usize>,
+    editor_scan_job: Option<tokio::task::JoinHandle<(String, usize, ScanResult)>>,
+    pub editor_scan_generation: u64,
     pub visualizer_id: String,
     /// Collapses the visualizer pane (playlist takes the full width) when
     /// true. Session-only — not persisted to `AppState`.
@@ -85,6 +123,11 @@ pub async fn open_runtime(
     let store = PlaylistStore::new(paths.db_file.clone());
     store
         .initialize()
+        .map_err(|e| RuntimeError::Db(e.to_string()))?;
+    // A crash or forced terminal close must not leave old staged editor rows
+    // visible to a later session.
+    store
+        .cleanup_editor_drafts()
         .map_err(|e| RuntimeError::Db(e.to_string()))?;
 
     let levels = Arc::new(LevelService::new(paths.db_file.clone()));
@@ -161,6 +204,20 @@ pub async fn open_runtime(
         browse_entries: Vec::new(),
         browse_cursor: 0,
         last_browse_dir: None,
+        editor_session: None,
+        editor_focus: EditorFocus::Files,
+        editor_playlist_cursor: 0,
+        editor_playlist_scroll: 0,
+        editor_saved_id: None,
+        editor_saved_name: None,
+        editor_load_cursor: 0,
+        editor_overlay: EditorOverlay::None,
+        editor_pending_name: String::new(),
+        editor_save_as: false,
+        editor_pending_paths: None,
+        editor_pending_insert: None,
+        editor_scan_job: None,
+        editor_scan_generation: 0,
         visualizer_id,
         visualizer_hidden: false,
         backend_fallback_notice,
@@ -305,6 +362,7 @@ impl AppRuntime {
 
     pub async fn tick(&mut self) {
         self.expire_status();
+        self.poll_editor_scan().await;
         self.player.poll_position().await;
         let snap = self.player.snapshot().await;
         if let Some(path) = snap.track_path.clone() {
@@ -361,6 +419,39 @@ impl AppRuntime {
             self.last_waveform = None;
             self.last_waveform_history = None;
             self.last_analysis_label = None;
+        }
+    }
+
+    async fn poll_editor_scan(&mut self) {
+        let Some(job) = self.editor_scan_job.as_ref() else {
+            return;
+        };
+        if !job.is_finished() {
+            return;
+        }
+        let job = self.editor_scan_job.take().expect("scan job present");
+        match job.await {
+            Ok((session, insert_at, result))
+                if self.editor_session.as_deref() == Some(&session) =>
+            {
+                if result.warnings.is_empty() {
+                    if let Err(e) = self.stage_scan_paths(&session, insert_at, &result.paths) {
+                        self.set_warning(format!("Could not stage scan: {e}"));
+                    }
+                } else if result.paths.is_empty() {
+                    self.set_warning(result.warnings.join("; "));
+                } else {
+                    self.editor_pending_paths = Some(result.paths);
+                    self.editor_pending_insert = Some(insert_at);
+                    self.editor_overlay = EditorOverlay::PartialScanConfirm;
+                    self.set_warning(format!(
+                        "Scan completed with warnings: {} — add partial result? (y/n)",
+                        result.warnings.join("; ")
+                    ));
+                }
+            }
+            Ok(_) => {}
+            Err(e) => self.set_warning(format!("Folder scan failed: {e}")),
         }
     }
 
@@ -465,6 +556,59 @@ impl AppRuntime {
                 let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
                 self.add_paths_internal(&paths)?;
             }
+            Command::EditorOpen => {
+                self.open_editor()?;
+            }
+            Command::EditorTab => {
+                self.editor_focus = match self.editor_focus {
+                    EditorFocus::Files => EditorFocus::Playlist,
+                    EditorFocus::Playlist => EditorFocus::Files,
+                };
+            }
+            Command::EditorUp => self.editor_move_cursor(-1),
+            Command::EditorDown => self.editor_move_cursor(1),
+            Command::EditorPageUp => self.editor_move_cursor(-10),
+            Command::EditorPageDown => self.editor_move_cursor(10),
+            Command::EditorHome => self.editor_set_cursor(0),
+            Command::EditorEnd => {
+                let n = if self.editor_focus == EditorFocus::Files {
+                    self.browse_entries.len()
+                } else {
+                    self.editor_draft_count().unwrap_or(0)
+                };
+                self.editor_set_cursor(n.saturating_sub(1));
+            }
+            Command::EditorParent => self.editor_parent(),
+            Command::EditorDrives => {
+                self.browse_dir = None;
+                self.browse_entries = drive_list();
+                self.browse_cursor = 0;
+            }
+            Command::EditorEnter => {
+                if self.editor_focus == EditorFocus::Files {
+                    if let Some(entry) = self.browse_entries.get(self.browse_cursor).cloned() {
+                        if entry.is_dir {
+                            self.set_editor_dir(entry.path);
+                        } else {
+                            self.editor_add_highlighted(false).await?;
+                        }
+                    }
+                }
+            }
+            Command::EditorAppend => self.editor_add_highlighted(false).await?,
+            Command::EditorInsert => self.editor_add_highlighted(true).await?,
+            Command::EditorRemove => self.editor_remove().map_err(ControlError::Message)?,
+            Command::EditorClear => self.editor_clear().map_err(ControlError::Message)?,
+            Command::EditorMoveUp => self.editor_reorder(true).map_err(ControlError::Message)?,
+            Command::EditorMoveDown => self.editor_reorder(false).map_err(ControlError::Message)?,
+            Command::EditorApply => self.editor_apply().await?,
+            Command::EditorCancel => self.editor_cancel(),
+            Command::EditorSave => self.editor_save(false).map_err(ControlError::Message)?,
+            Command::EditorSaveAs => self.editor_save(true).map_err(ControlError::Message)?,
+            Command::EditorLoad => self.editor_load().map_err(ControlError::Message)?,
+            Command::EditorRename => self.editor_rename().map_err(ControlError::Message)?,
+            Command::EditorDelete => self.editor_delete().map_err(ControlError::Message)?,
+            Command::EditorConfirm { yes } => self.editor_confirm(yes).await?,
             Command::RequestAddFolder => {
                 let dir = self.last_browse_dir.clone().unwrap_or_else(|| {
                     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
@@ -554,6 +698,10 @@ impl AppRuntime {
                 self.set_status("Cancelled");
             }
             Command::RemoveSelected => {
+                if let Err(e) = self.player.stop_and_clear_context().await {
+                    self.set_warning(format!("Could not stop playback; removal cancelled: {e}"));
+                    return Ok(());
+                }
                 if let Some(id) = self.cursor_item_id() {
                     let mut set = HashSet::new();
                     set.insert(id);
@@ -584,6 +732,11 @@ impl AppRuntime {
             }
             Command::ConfirmClear { yes } => {
                 if yes && self.confirm_clear {
+                    if let Err(e) = self.player.stop_and_clear_context().await {
+                        self.set_warning(format!("Could not stop playback; clear cancelled: {e}"));
+                        self.confirm_clear = false;
+                        return Ok(());
+                    }
                     match self.store.clear_playlist(self.playlist_id) {
                         Ok(()) => {
                             self.cursor_index = 0;
@@ -650,6 +803,443 @@ impl AppRuntime {
     pub fn set_visualizer_id(&mut self, id: &str) {
         self.visualizer_id = id.to_string();
         self.app_state.visualizer_id = Some(id.to_string());
+    }
+
+    pub fn editor_active(&self) -> bool {
+        self.editor_session.is_some()
+    }
+
+    pub fn editor_draft_count(&self) -> Result<usize, String> {
+        let Some(session) = self.editor_session.as_deref() else {
+            return Ok(0);
+        };
+        self.store.draft_count(session).map_err(|e| e.to_string())
+    }
+
+    pub fn editor_fetch_rows(&self, offset: usize, limit: usize) -> Result<Vec<DraftRow>, String> {
+        let Some(session) = self.editor_session.as_deref() else {
+            return Ok(Vec::new());
+        };
+        self.store
+            .fetch_draft_window(session, offset, limit)
+            .map_err(|e| e.to_string())
+    }
+
+    fn open_editor(&mut self) -> Result<(), ControlError> {
+        let session = format!(
+            "editor-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        );
+        self.store
+            .draft_from_playlist(&session, self.playlist_id)
+            .map_err(|e| ControlError::Message(e.to_string()))?;
+        self.editor_session = Some(session);
+        self.editor_focus = EditorFocus::Files;
+        self.editor_playlist_cursor = 0;
+        self.editor_playlist_scroll = 0;
+        self.editor_saved_id = Some(self.playlist_id);
+        self.editor_saved_name = self.store.playlist_name(self.playlist_id).ok().flatten();
+        self.editor_overlay = EditorOverlay::None;
+        self.editor_pending_name.clear();
+        self.editor_pending_paths = None;
+        self.editor_pending_insert = None;
+        self.input_mode = "editor".into();
+        let dir = self
+            .last_browse_dir
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        self.set_editor_dir(dir);
+        self.set_status("Playlist editor — Tab switches panes, F10 applies, Esc cancels");
+        Ok(())
+    }
+
+    fn set_editor_dir(&mut self, dir: PathBuf) {
+        self.browse_dir = Some(dir.clone());
+        self.last_browse_dir = Some(dir.clone());
+        match list_dir_checked(&dir) {
+            Ok(entries) => self.browse_entries = entries,
+            Err(e) => {
+                self.browse_entries.clear();
+                self.set_warning(format!("Cannot read {}: {e}", dir.display()));
+            }
+        }
+        self.browse_cursor = 0;
+    }
+
+    fn editor_move_cursor(&mut self, delta: isize) {
+        let len = if self.editor_focus == EditorFocus::Files {
+            self.browse_entries.len()
+        } else {
+            self.editor_draft_count().unwrap_or(0)
+        };
+        let cur = if self.editor_focus == EditorFocus::Files {
+            self.browse_cursor
+        } else {
+            self.editor_playlist_cursor
+        };
+        let next = if delta.is_negative() {
+            cur.saturating_sub(delta.unsigned_abs())
+        } else {
+            cur.saturating_add(delta as usize)
+                .min(len.saturating_sub(1))
+        };
+        self.editor_set_cursor(next);
+    }
+
+    fn editor_set_cursor(&mut self, index: usize) {
+        if self.editor_focus == EditorFocus::Files {
+            self.browse_cursor = index.min(self.browse_entries.len().saturating_sub(1));
+        } else {
+            self.editor_playlist_cursor =
+                index.min(self.editor_draft_count().unwrap_or(0).saturating_sub(1));
+        }
+    }
+
+    fn editor_parent(&mut self) {
+        let Some(dir) = self.browse_dir.clone() else {
+            return;
+        };
+        if let Some(parent) = dir.parent().map(Path::to_path_buf) {
+            self.set_editor_dir(parent);
+        } else {
+            self.browse_dir = None;
+            self.browse_entries = drive_list();
+            self.browse_cursor = 0;
+        }
+    }
+
+    async fn editor_add_highlighted(&mut self, insert: bool) -> Result<(), ControlError> {
+        if self.editor_focus != EditorFocus::Files {
+            return Ok(());
+        }
+        let Some(entry) = self.browse_entries.get(self.browse_cursor).cloned() else {
+            return Ok(());
+        };
+        let draft_count = self.editor_draft_count().unwrap_or(0);
+        let insert_at = if insert {
+            self.editor_playlist_cursor.min(draft_count)
+        } else {
+            self.editor_playlist_cursor
+                .saturating_add(1)
+                .min(draft_count)
+        };
+        if entry.is_dir {
+            self.editor_scan_generation = self.editor_scan_generation.wrapping_add(1);
+            let session = self
+                .editor_session
+                .clone()
+                .ok_or_else(|| ControlError::Message("editor is not open".into()))?;
+            let generation = self.editor_scan_generation;
+            self.editor_scan_job = Some(tokio::task::spawn_blocking(move || {
+                let result = collect_media_files_recursive_safe(&entry.path);
+                (session, insert_at, result)
+            }));
+            self.set_status(format!("Scanning {}…", entry.name));
+            let _ = generation;
+        } else if let Some(session) = self.editor_session.clone() {
+            self.stage_scan_paths(&session, insert_at, std::slice::from_ref(&entry.path))
+                .map_err(ControlError::Message)?;
+        }
+        Ok(())
+    }
+
+    fn stage_scan_paths(
+        &mut self,
+        session: &str,
+        insert_at: usize,
+        paths: &[PathBuf],
+    ) -> Result<(), String> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        if insert_at >= self.editor_draft_count().map_err(|e| e.to_string())? {
+            self.store
+                .append_draft_paths(session, paths)
+                .map_err(|e| e.to_string())?;
+        } else {
+            self.store
+                .insert_draft_paths(session, insert_at, paths)
+                .map_err(|e| e.to_string())?;
+        }
+        self.editor_playlist_cursor = insert_at.min(self.editor_draft_count()?.saturating_sub(1));
+        self.set_status(format!(
+            "Staged {} item{}",
+            paths.len(),
+            if paths.len() == 1 { "" } else { "s" }
+        ));
+        Ok(())
+    }
+
+    fn editor_remove(&mut self) -> Result<(), String> {
+        let Some(session) = self.editor_session.as_deref() else {
+            return Ok(());
+        };
+        if self.editor_focus != EditorFocus::Playlist {
+            return Ok(());
+        }
+        if self
+            .store
+            .remove_draft_at(session, self.editor_playlist_cursor)
+            .map_err(|e| e.to_string())?
+        {
+            self.editor_playlist_cursor = self.editor_playlist_cursor.saturating_sub(1);
+            self.set_status("Removed staged item");
+        }
+        Ok(())
+    }
+
+    fn editor_clear(&mut self) -> Result<(), String> {
+        let Some(session) = self.editor_session.as_deref() else {
+            return Ok(());
+        };
+        self.store.clear_draft(session).map_err(|e| e.to_string())?;
+        self.editor_playlist_cursor = 0;
+        self.set_status("Staged playlist cleared (Apply to commit, Esc to undo)");
+        Ok(())
+    }
+
+    fn editor_reorder(&mut self, up: bool) -> Result<(), String> {
+        let Some(session) = self.editor_session.as_deref() else {
+            return Ok(());
+        };
+        if self.editor_focus != EditorFocus::Playlist {
+            return Ok(());
+        }
+        if self
+            .store
+            .move_draft_at(session, self.editor_playlist_cursor, up)
+            .map_err(|e| e.to_string())?
+        {
+            if up {
+                self.editor_playlist_cursor = self.editor_playlist_cursor.saturating_sub(1);
+            } else {
+                self.editor_playlist_cursor = self
+                    .editor_playlist_cursor
+                    .saturating_add(1)
+                    .min(self.editor_draft_count()?.saturating_sub(1));
+            }
+        }
+        Ok(())
+    }
+
+    fn editor_load(&mut self) -> Result<(), String> {
+        self.editor_overlay = EditorOverlay::Load;
+        self.editor_load_cursor = 0;
+        self.set_status("Load playlist: Up/Down choose, Enter loads, Esc cancels");
+        Ok(())
+    }
+
+    fn editor_save(&mut self, save_as: bool) -> Result<(), String> {
+        self.editor_save_as = save_as;
+        if self.editor_saved_id == Some(self.playlist_id) && !save_as {
+            self.editor_pending_name = self.editor_saved_name.clone().unwrap_or_default();
+        }
+        self.editor_overlay = EditorOverlay::SaveName;
+        self.input_buffer = self.editor_pending_name.clone();
+        self.set_status("Enter playlist name, then press Enter to save");
+        Ok(())
+    }
+
+    pub fn editor_playlist_summaries(&self) -> Result<Vec<tz_db::PlaylistSummary>, String> {
+        self.store
+            .list_playlists()
+            .map(|lists| {
+                lists
+                    .into_iter()
+                    .filter(|summary| summary.id != self.playlist_id)
+                    .collect()
+            })
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn editor_commit_name(&mut self, name: String, save_as: bool) -> Result<(), String> {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err("Playlist name cannot be empty".into());
+        }
+        let target = if save_as { None } else { self.editor_saved_id };
+        if target == Some(self.playlist_id) {
+            return Err("The active Default playlist can only be changed with Apply".into());
+        }
+        let session = self.editor_session.as_deref().ok_or("editor is not open")?;
+        let id = self
+            .store
+            .save_playlist_from_draft(session, &name, target)
+            .map_err(|e| e.to_string())?;
+        self.editor_saved_id = Some(id);
+        self.editor_saved_name = Some(name.clone());
+        self.editor_overlay = EditorOverlay::None;
+        self.input_buffer.clear();
+        self.set_status(format!("Saved playlist '{name}'"));
+        Ok(())
+    }
+
+    pub fn editor_commit_rename(&mut self, name: String) -> Result<(), String> {
+        let id = self.editor_saved_id.ok_or("no saved playlist selected")?;
+        if id == self.playlist_id {
+            return Err("The active Default playlist cannot be renamed".into());
+        }
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("Playlist name cannot be empty".into());
+        }
+        self.store
+            .rename_playlist(id, name)
+            .map_err(|e| e.to_string())?;
+        self.editor_saved_name = Some(name.to_string());
+        self.editor_overlay = EditorOverlay::None;
+        self.input_buffer.clear();
+        self.set_status("Playlist renamed");
+        Ok(())
+    }
+
+    pub fn editor_load_selected(&mut self) -> Result<(), String> {
+        let lists = self.editor_playlist_summaries()?;
+        let Some(summary) = lists.get(self.editor_load_cursor) else {
+            return Ok(());
+        };
+        if summary.id == self.playlist_id {
+            return Err("The active playlist is already loaded".into());
+        }
+        let session = self.editor_session.as_deref().ok_or("editor is not open")?;
+        self.store
+            .draft_from_playlist(session, summary.id)
+            .map_err(|e| e.to_string())?;
+        self.editor_saved_id = Some(summary.id);
+        self.editor_saved_name = Some(summary.name.clone());
+        self.editor_playlist_cursor = 0;
+        self.editor_overlay = EditorOverlay::None;
+        self.set_status(format!(
+            "Loaded playlist '{}' into the staged editor",
+            summary.name
+        ));
+        Ok(())
+    }
+
+    pub fn editor_move_load_cursor(&mut self, delta: isize) {
+        let len = self
+            .editor_playlist_summaries()
+            .map(|v| v.len())
+            .unwrap_or(0);
+        if len == 0 {
+            self.editor_load_cursor = 0;
+            return;
+        }
+        self.editor_load_cursor = if delta.is_negative() {
+            self.editor_load_cursor.saturating_sub(delta.unsigned_abs())
+        } else {
+            self.editor_load_cursor
+                .saturating_add(delta as usize)
+                .min(len - 1)
+        };
+    }
+
+    fn editor_rename(&mut self) -> Result<(), String> {
+        if self.editor_saved_id == Some(self.playlist_id) {
+            return Err("The active Default playlist cannot be renamed".into());
+        }
+        self.editor_overlay = EditorOverlay::Rename;
+        self.input_buffer = self.editor_saved_name.clone().unwrap_or_default();
+        Ok(())
+    }
+
+    fn editor_delete(&mut self) -> Result<(), String> {
+        if self.editor_saved_id == Some(self.playlist_id) {
+            return Err("The active playlist cannot be deleted".into());
+        }
+        self.editor_overlay = EditorOverlay::DeleteConfirm;
+        self.set_status("Delete selected saved playlist? (y/n)");
+        Ok(())
+    }
+
+    async fn editor_confirm(&mut self, yes: bool) -> Result<(), ControlError> {
+        match self.editor_overlay {
+            EditorOverlay::PartialScanConfirm => {
+                if yes {
+                    if let (Some(paths), Some(index), Some(session)) = (
+                        self.editor_pending_paths.take(),
+                        self.editor_pending_insert.take(),
+                        self.editor_session.clone(),
+                    ) {
+                        self.stage_scan_paths(&session, index, &paths)
+                            .map_err(ControlError::Message)?;
+                    }
+                } else {
+                    self.editor_pending_paths = None;
+                    self.editor_pending_insert = None;
+                    self.set_status("Partial scan discarded");
+                }
+                self.editor_overlay = EditorOverlay::None;
+            }
+            EditorOverlay::DiscardConfirm => {
+                if yes {
+                    self.editor_cancel();
+                } else {
+                    self.editor_overlay = EditorOverlay::None;
+                }
+            }
+            EditorOverlay::DeleteConfirm => {
+                if yes {
+                    if let Some(id) = self.editor_saved_id {
+                        self.store
+                            .delete_playlist(id)
+                            .map_err(|e| ControlError::Message(e.to_string()))?;
+                        self.editor_saved_id = Some(self.playlist_id);
+                        self.editor_saved_name =
+                            self.store.playlist_name(self.playlist_id).ok().flatten();
+                        self.set_status("Playlist deleted");
+                    }
+                }
+                self.editor_overlay = EditorOverlay::None;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn editor_cancel(&mut self) {
+        if let Some(session) = self.editor_session.take() {
+            let _ = self.store.clear_draft(&session);
+        }
+        self.editor_scan_job = None;
+        self.editor_pending_paths = None;
+        self.editor_pending_insert = None;
+        self.editor_overlay = EditorOverlay::None;
+        self.input_mode = "normal".into();
+        self.set_status("Playlist edits cancelled");
+    }
+
+    async fn editor_apply(&mut self) -> Result<(), ControlError> {
+        let Some(session) = self.editor_session.clone() else {
+            return Ok(());
+        };
+        if self.editor_scan_job.is_some() {
+            self.set_warning("Please wait for the folder scan to finish");
+            return Ok(());
+        }
+        if let Err(e) = self.player.stop_and_clear_context().await {
+            self.set_warning(format!("Could not stop playback; edits not applied: {e}"));
+            return Ok(());
+        }
+        self.store
+            .replace_playlist_from_draft(self.playlist_id, &session)
+            .map_err(|e| ControlError::Message(e.to_string()))?;
+        self.store
+            .clear_draft(&session)
+            .map_err(|e| ControlError::Message(e.to_string()))?;
+        self.editor_session = None;
+        self.editor_overlay = EditorOverlay::None;
+        self.input_mode = "normal".into();
+        self.cursor_index = 0;
+        self.find_ids = None;
+        self.find_query.clear();
+        self.app_state.current_item_id = None;
+        self.set_status("Playlist applied; playback stopped");
+        Ok(())
     }
 
     fn add_paths_internal(&mut self, paths: &[PathBuf]) -> Result<(), ControlError> {
@@ -854,6 +1444,43 @@ pub fn list_dir(dir: &Path) -> Vec<FsEntry> {
     dirs
 }
 
+fn list_dir_checked(dir: &Path) -> Result<Vec<FsEntry>, String> {
+    std::fs::read_dir(dir).map_err(|e| e.to_string()).map(|rd| {
+        let mut dirs = Vec::new();
+        let mut files = Vec::new();
+        for ent in rd.flatten() {
+            let path = ent.path();
+            let name = ent.file_name().to_string_lossy().into_owned();
+            if ent.file_type().map(|t| t.is_symlink()).unwrap_or(false) {
+                continue;
+            }
+            if path.is_dir() {
+                dirs.push(FsEntry {
+                    name,
+                    path,
+                    is_dir: true,
+                });
+            } else if path.is_file() && is_media_extension(&path) {
+                files.push(FsEntry {
+                    name,
+                    path,
+                    is_dir: false,
+                });
+            }
+        }
+        let sort = |a: &FsEntry, b: &FsEntry| {
+            a.name
+                .to_ascii_lowercase()
+                .cmp(&b.name.to_ascii_lowercase())
+                .then(a.name.cmp(&b.name))
+        };
+        dirs.sort_by(sort);
+        files.sort_by(sort);
+        dirs.extend(files);
+        dirs
+    })
+}
+
 /// Windows drive letters currently mounted, as synthetic browse entries
 /// (e.g. `C:\`). Reached only by going "up" from a drive root — no single
 /// filesystem parent spans drives. Always empty on non-Windows targets,
@@ -894,17 +1521,53 @@ fn expand_media_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 fn collect_media_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for ent in rd.flatten() {
-        let path = ent.path();
-        if path.is_dir() {
-            collect_media_files_recursive(&path, out);
-        } else if path.is_file() && is_media_extension(&path) {
-            out.push(path);
+    out.extend(collect_media_files_recursive_safe(dir).paths);
+}
+
+fn collect_media_files_recursive_safe(root: &Path) -> ScanResult {
+    let mut stack = vec![root.to_path_buf()];
+    let mut visited = HashSet::new();
+    let mut paths = Vec::new();
+    let mut warnings = Vec::new();
+    while let Some(dir) = stack.pop() {
+        let key = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+        if !visited.insert(key) {
+            continue;
+        }
+        let rd = match std::fs::read_dir(&dir) {
+            Ok(rd) => rd,
+            Err(e) => {
+                warnings.push(format!("{}: {e}", dir.display()));
+                continue;
+            }
+        };
+        let mut entries: Vec<_> = rd.flatten().collect();
+        entries.sort_by_key(|e| e.file_name().to_string_lossy().to_ascii_lowercase());
+        for ent in entries.into_iter().rev() {
+            let path = ent.path();
+            let ft = match ent.file_type() {
+                Ok(ft) => ft,
+                Err(e) => {
+                    warnings.push(format!("{}: {e}", path.display()));
+                    continue;
+                }
+            };
+            if ft.is_symlink() {
+                continue;
+            }
+            if ft.is_dir() {
+                stack.push(path);
+            } else if ft.is_file() && is_media_extension(&path) {
+                paths.push(path);
+            }
         }
     }
+    paths.sort_by(|a, b| {
+        a.to_string_lossy()
+            .to_ascii_lowercase()
+            .cmp(&b.to_string_lossy().to_ascii_lowercase())
+    });
+    ScanResult { paths, warnings }
 }
 
 fn is_media_extension(path: &Path) -> bool {
@@ -1011,6 +1674,58 @@ mod tests {
             db_file: dir.join("db.sqlite3"),
         };
         open_runtime(paths, Some(BackendKind::Fake)).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn editor_cancel_leaves_working_playlist_unchanged() {
+        let mut runtime = test_runtime("editor_cancel").await;
+        let dir = temp_dir("editor_cancel_files");
+        std::fs::write(dir.join("song.mp3"), b"").unwrap();
+        runtime
+            .store
+            .add_tracks(runtime.playlist_id, &[dir.join("old.mp3")])
+            .unwrap();
+        runtime.last_browse_dir = Some(dir.clone());
+        runtime.handle(Command::EditorOpen).await.unwrap();
+        assert_eq!(runtime.editor_draft_count().unwrap(), 1);
+        runtime.editor_focus = EditorFocus::Files;
+        runtime.browse_cursor = 0;
+        runtime.handle(Command::EditorAppend).await.unwrap();
+        runtime.handle(Command::EditorCancel).await.unwrap();
+        assert_eq!(runtime.store.count(runtime.playlist_id).unwrap(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
+    }
+
+    #[tokio::test]
+    async fn editor_protects_active_default_from_saved_playlist_mutations() {
+        let mut runtime = test_runtime("editor_protected_default").await;
+        runtime.handle(Command::EditorOpen).await.unwrap();
+        assert!(runtime.editor_commit_name("Default".into(), false).is_err());
+        assert!(runtime.editor_commit_rename("Renamed".into()).is_err());
+        assert!(runtime.editor_delete().is_err());
+        runtime.editor_cancel();
+        let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
+    }
+
+    #[tokio::test]
+    async fn editor_apply_stops_and_replaces_working_playlist() {
+        let mut runtime = test_runtime("editor_apply").await;
+        let dir = temp_dir("editor_apply_files");
+        let song = dir.join("song.mp3");
+        std::fs::write(&song, b"").unwrap();
+        runtime.last_browse_dir = Some(dir.clone());
+        runtime.handle(Command::EditorOpen).await.unwrap();
+        runtime.editor_focus = EditorFocus::Files;
+        runtime.browse_cursor = 0;
+        runtime.handle(Command::EditorAppend).await.unwrap();
+        assert_eq!(runtime.editor_draft_count().unwrap(), 1);
+        runtime.handle(Command::EditorApply).await.unwrap();
+        assert_eq!(runtime.input_mode, "normal");
+        assert_eq!(runtime.store.count(runtime.playlist_id).unwrap(), 1);
+        assert!(runtime.player.snapshot().await.item_id.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
     }
 
     #[tokio::test]

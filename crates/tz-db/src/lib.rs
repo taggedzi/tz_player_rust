@@ -17,7 +17,10 @@ pub use beat_store::{BeatParams, BeatReading, BeatStore};
 pub use cache_pruner::{AnalysisCachePruneResult, AnalysisCachePruner};
 pub use envelope_store::EnvelopeStore;
 pub use error::DbError;
-pub use models::{MoveDirection, PlaylistRow, TrackMeta, TrackMetaSnapshot, TrackRecord};
+pub use models::{
+    DraftRow, MoveDirection, PlaylistRow, PlaylistSummary, TrackMeta, TrackMetaSnapshot,
+    TrackRecord,
+};
 pub use playlist_store::PlaylistStore;
 pub use schema::{
     create_schema, ensure_playlist_search_fts, open_connection, table_exists, user_version,
