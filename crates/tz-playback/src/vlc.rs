@@ -32,7 +32,9 @@ impl VlcDiscovery {
 /// Probe common install locations for VLC on this platform.
 pub fn discover_vlc() -> VlcDiscovery {
     let mut notes = Vec::new();
-    let mut vlc_executable = which("vlc").or_else(|| which("vlc.exe"));
+    let vlc_executable = which("vlc").or_else(|| which("vlc.exe"));
+    #[cfg(windows)]
+    let mut vlc_executable = vlc_executable;
     let mut libvlc_dir = None;
 
     #[cfg(windows)]
