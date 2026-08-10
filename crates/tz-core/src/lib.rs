@@ -12,7 +12,10 @@ mod state;
 
 pub use about::{about_info, AboutInfo, PRODUCT_DESCRIPTION, PRODUCT_NAME};
 pub use levels::{AnalysisSample, LevelSample, LevelService, LevelSource};
-pub use metadata::{read_track_meta, refresh_playlist_metadata};
+pub use metadata::{
+    configure_lofty_for_untrusted_media, read_track_meta, refresh_playlist_metadata,
+    METADATA_ITEM_MAX_BYTES,
+};
 pub use paths::{app_paths, app_paths_or_cwd, AppPaths};
 pub use player::{PlayerError, PlayerService, PlayerState, RepeatMode};
 pub use runtime::{

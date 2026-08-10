@@ -30,11 +30,11 @@ release-hardening phase.
   WAV samples are streamed under the same limits, and all four cache products
   share one decode per track. User overrides have documented hard ceilings.
   Oversized WAV and FFmpeg paths have regression tests.
-- [ ] **Limit embedded cover-art decoding.** Reject excessively large embedded
-  pictures before decoding, set strict image width/height/allocation limits,
-  and consider limiting the total metadata and picture payload accepted from
-  Lofty. **Done when:** a cover image cannot allocate hundreds of megabytes
-  before being resized.
+- [x] **Limit embedded cover-art decoding.** Lofty now enforces an 8 MiB
+  per-item allocation cap on every metadata-reading thread; cover parsing also
+  has a cumulative 32 MiB read budget and rejects more than 16 MiB of picture
+  payload. Pictures over 8 MiB are skipped before image parsing, and strict
+  4096x4096 / 32 MiB decoder limits are tested before the 160px resize.
 - [ ] **Sanitize plain terminal output.** Introduce a shared terminal-safe
   display function that strips or visibly escapes C0/C1 controls, ESC, CR/LF,
   and problematic directional controls. Apply it to `tz-player list`,

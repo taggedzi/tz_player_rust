@@ -99,6 +99,11 @@ lower or raise those limits with
 and fifteen minutes. FFmpeg stdin is disabled, and any process that reaches a
 limit is killed and reaped.
 
+Embedded cover art is treated as untrusted input. Individual picture payloads
+are capped at 8 MiB, all pictures in a tag at 16 MiB, cumulative cover-metadata
+reads at 32 MiB, and decoded images at 4096x4096 / 32 MiB. Artwork outside
+those limits is ignored and the cover visualizer uses its normal empty state.
+
 ## Empty playlist
 
 Press `a` to open the folder browser (arrows to navigate, Enter to open a
