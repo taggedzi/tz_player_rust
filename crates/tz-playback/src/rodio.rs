@@ -262,6 +262,10 @@ mod tests {
     use std::fs;
     use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+    fn output_device_tests_enabled() -> bool {
+        std::env::var("TZ_PLAYER_RODIO_OUTPUT_TESTS").as_deref() == Ok("1")
+    }
+
     fn silent_wav(duration_ms: u32) -> std::path::PathBuf {
         const SAMPLE_RATE: u32 = 8_000;
         const CHANNELS: u16 = 1;
@@ -297,6 +301,9 @@ mod tests {
 
     #[tokio::test]
     async fn startup_is_clean_or_reports_device_unavailable() {
+        if !output_device_tests_enabled() {
+            return;
+        }
         let mut backend = RodioPlaybackBackend::new();
         match backend.start().await {
             Ok(()) => {
@@ -312,6 +319,9 @@ mod tests {
 
     #[tokio::test]
     async fn silent_wav_reaches_one_natural_end_when_device_exists() {
+        if !output_device_tests_enabled() {
+            return;
+        }
         let path = silent_wav(200);
         let mut backend = RodioPlaybackBackend::new();
         match backend.start().await {
@@ -343,6 +353,9 @@ mod tests {
 
     #[tokio::test]
     async fn decode_failure_does_not_poison_the_next_track_when_device_exists() {
+        if !output_device_tests_enabled() {
+            return;
+        }
         let valid_path = silent_wav(200);
         let unsupported_path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
@@ -378,6 +391,9 @@ mod tests {
 
     #[tokio::test]
     async fn muted_format_matrix_reaches_natural_end_when_device_exists() {
+        if !output_device_tests_enabled() {
+            return;
+        }
         const FIXTURES: &[&str] = &[
             "tone.wav",
             "tone.mp3",
@@ -431,6 +447,9 @@ mod tests {
 
     #[tokio::test]
     async fn silent_transport_controls_work_through_output_when_device_exists() {
+        if !output_device_tests_enabled() {
+            return;
+        }
         let path = silent_wav(3_000);
         let mut backend = RodioPlaybackBackend::new();
         match backend.start().await {

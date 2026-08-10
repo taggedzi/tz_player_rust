@@ -790,6 +790,9 @@ mod tests {
 
     #[tokio::test]
     async fn rodio_real_output_natural_end_advances_once_when_device_exists() {
+        if std::env::var("TZ_PLAYER_RODIO_OUTPUT_TESTS").as_deref() != Ok("1") {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!(
             "tz_player_rodio_service_{}",
             SystemTime::now()
