@@ -76,6 +76,7 @@ cargo build --release -p tz-player
 | [ / ] | Speed (`\` = 1.0x) |
 | r / s | Repeat cycle / shuffle |
 | f | Find (FTS, filters live as you type) |
+| o | Cycle playlist view order: Playlist / Track / Artist / Album |
 | a | Open staged dual-pane playlist editor |
 | d / Delete | Open editor focused on playlist items |
 | c | Open editor with a staged clear |
@@ -89,6 +90,10 @@ cargo build --release -p tz-player
 | q | Quit |
 
 Full reference: [`docs/usage.md`](docs/usage.md).
+
+Playlist rows expose aligned Track, Artist, and Album columns. Sorting is a
+persisted view preference only; it never rewrites the staged playlist or the
+order used by Next/Previous.
 
 ## Workspace
 

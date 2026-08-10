@@ -11,8 +11,8 @@ use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Transact
 
 use crate::error::DbError;
 use crate::models::{
-    DraftRow, MoveDirection, PlaylistRow, PlaylistSummary, TrackMeta, TrackMetaSnapshot,
-    TrackRecord,
+    DraftRow, MoveDirection, PlaylistRow, PlaylistSort, PlaylistSummary, TrackMeta,
+    TrackMetaSnapshot, TrackRecord,
 };
 use crate::path_util::{normalize_path, stat_path};
 use crate::{create_schema, ensure_playlist_search_fts, open_connection};
@@ -535,8 +535,18 @@ impl PlaylistStore {
         offset: usize,
         limit: usize,
     ) -> Result<Vec<PlaylistRow>, DbError> {
+        self.fetch_window_sorted(playlist_id, offset, limit, PlaylistSort::Playlist)
+    }
+
+    pub fn fetch_window_sorted(
+        &self,
+        playlist_id: i64,
+        offset: usize,
+        limit: usize,
+        sort: PlaylistSort,
+    ) -> Result<Vec<PlaylistRow>, DbError> {
         let conn = self.connect()?;
-        let mut stmt = conn.prepare(
+        let sql = format!(
             r#"
             SELECT
                 playlist_items.id AS item_id,
@@ -554,10 +564,12 @@ impl PlaylistStore {
             JOIN tracks ON tracks.id = playlist_items.track_id
             LEFT JOIN track_meta ON track_meta.track_id = tracks.id
             WHERE playlist_items.playlist_id = ?1
-            ORDER BY playlist_items.pos_key
+            ORDER BY {}
             LIMIT ?2 OFFSET ?3
             "#,
-        )?;
+            playlist_order_by(sort)
+        );
+        let mut stmt = conn.prepare(&sql)?;
         let rows = stmt
             .query_map(
                 params![playlist_id, limit as i64, offset as i64],
@@ -925,14 +937,23 @@ impl PlaylistStore {
     }
 
     pub fn list_item_ids(&self, playlist_id: i64) -> Result<Vec<i64>, DbError> {
+        self.list_item_ids_sorted(playlist_id, PlaylistSort::Playlist)
+    }
+
+    pub fn list_item_ids_sorted(
+        &self,
+        playlist_id: i64,
+        sort: PlaylistSort,
+    ) -> Result<Vec<i64>, DbError> {
         let conn = self.connect()?;
-        let mut stmt = conn.prepare(
-            r#"
-            SELECT id FROM playlist_items
-            WHERE playlist_id = ?1
-            ORDER BY pos_key ASC
-            "#,
-        )?;
+        let sql = format!(
+            "SELECT playlist_items.id FROM playlist_items \
+             JOIN tracks ON tracks.id = playlist_items.track_id \
+             LEFT JOIN track_meta ON track_meta.track_id = tracks.id \
+             WHERE playlist_items.playlist_id = ?1 ORDER BY {}",
+            playlist_order_by(sort)
+        );
+        let mut stmt = conn.prepare(&sql)?;
         let ids = stmt
             .query_map([playlist_id], |row| row.get(0))?
             .collect::<Result<Vec<_>, _>>()?;
@@ -1172,6 +1193,27 @@ impl PlaylistStore {
         )?;
         tx.commit()?;
         Ok(())
+    }
+}
+
+fn playlist_order_by(sort: PlaylistSort) -> &'static str {
+    const TRACK: &str = "LOWER(COALESCE(NULLIF(TRIM(track_meta.title), ''), tracks.path)), \
+         playlist_items.pos_key, playlist_items.id";
+    match sort {
+        PlaylistSort::Playlist => "playlist_items.pos_key, playlist_items.id",
+        PlaylistSort::Track => TRACK,
+        PlaylistSort::Artist => {
+            "CASE WHEN NULLIF(TRIM(track_meta.artist), '') IS NULL THEN 1 ELSE 0 END, \
+             LOWER(COALESCE(track_meta.artist, '')), \
+             LOWER(COALESCE(NULLIF(TRIM(track_meta.title), ''), tracks.path)), \
+             playlist_items.pos_key, playlist_items.id"
+        }
+        PlaylistSort::Album => {
+            "CASE WHEN NULLIF(TRIM(track_meta.album), '') IS NULL THEN 1 ELSE 0 END, \
+             LOWER(COALESCE(track_meta.album, '')), \
+             LOWER(COALESCE(NULLIF(TRIM(track_meta.title), ''), tracks.path)), \
+             playlist_items.pos_key, playlist_items.id"
+        }
     }
 }
 
@@ -1516,6 +1558,63 @@ mod tests {
             .unwrap();
         assert_eq!(removed, 1);
         assert_eq!(store.count(pid).unwrap(), 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn metadata_view_sorts_are_stable_and_do_not_change_playlist_order() {
+        let (store, _db, pid, dir) = store_with_tracks(3);
+        let original = store.fetch_window(pid, 0, 10).unwrap();
+        let metadata = [
+            ("Zulu", "Beta", "Gamma"),
+            ("Alpha", "Zulu", "Beta"),
+            ("Mike", "Alpha", "Zulu"),
+        ];
+        for (row, (title, artist, album)) in original.iter().zip(metadata) {
+            store
+                .upsert_track_meta(
+                    row.track_id,
+                    &TrackMeta {
+                        title: Some(title.into()),
+                        artist: Some(artist.into()),
+                        album: Some(album.into()),
+                        year: None,
+                        duration_ms: None,
+                        meta_valid: true,
+                        meta_error: None,
+                        mtime_ns: None,
+                        size_bytes: None,
+                    },
+                )
+                .unwrap();
+        }
+
+        let titles = |sort| {
+            store
+                .fetch_window_sorted(pid, 0, 10, sort)
+                .unwrap()
+                .into_iter()
+                .map(|row| row.title.unwrap())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(titles(PlaylistSort::Track), ["Alpha", "Mike", "Zulu"]);
+        assert_eq!(titles(PlaylistSort::Artist), ["Mike", "Zulu", "Alpha"]);
+        assert_eq!(titles(PlaylistSort::Album), ["Alpha", "Zulu", "Mike"]);
+        assert_eq!(
+            store.list_item_ids(pid).unwrap(),
+            original.iter().map(|row| row.item_id).collect::<Vec<_>>(),
+            "view sorting must not mutate stored playlist order"
+        );
+        assert_eq!(
+            store
+                .list_item_ids_sorted(pid, PlaylistSort::Artist)
+                .unwrap(),
+            [
+                original[2].item_id,
+                original[0].item_id,
+                original[1].item_id,
+            ]
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

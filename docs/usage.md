@@ -107,6 +107,7 @@ cargo run -p tz-playback --example rodio_smoke -- path\to\track.flac
 | `[` / `]` | Speed (`\` = 1.0x) |
 | `r` / `s` | Repeat cycle / shuffle |
 | `f` | Find (FTS filter, live as you type) |
+| `o` | Cycle view order: Playlist / Track / Artist / Album |
 | `a` | Open staged dual-pane editor |
 | `d` / `Delete` | Open the staged playlist editor (select an item, then remove/apply) |
 | `c` | Open editor with a staged clear (Apply to commit, Esc to undo) |
@@ -120,6 +121,11 @@ cargo run -p tz-playback --example rodio_smoke -- path\to\track.flac
 | `i` | About / version info |
 | `?` | Help (full-screen key reference) |
 | `q` | Quit (persists state) |
+
+The playlist shows Track, Artist, and Album as aligned columns. `o` changes
+only the displayed order and preserves the selected item; playback order and
+the staged playlist remain unchanged. Switch back to Playlist order before
+using the main-view `Shift+Up` / `Shift+Down` reorder shortcut.
 
 ## Visualizers (`z` cycles all built-ins)
 

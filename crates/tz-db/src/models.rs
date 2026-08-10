@@ -84,6 +84,56 @@ pub enum MoveDirection {
     Down,
 }
 
+/// Non-destructive playlist view order. Playback and editor ordering continue
+/// to use `pos_key`; these modes only affect rows presented by frontends.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PlaylistSort {
+    #[default]
+    Playlist,
+    Track,
+    Artist,
+    Album,
+}
+
+impl PlaylistSort {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "playlist" => Some(Self::Playlist),
+            "track" | "title" => Some(Self::Track),
+            "artist" => Some(Self::Artist),
+            "album" => Some(Self::Album),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Playlist => "playlist",
+            Self::Track => "track",
+            Self::Artist => "artist",
+            Self::Album => "album",
+        }
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Playlist => "Playlist",
+            Self::Track => "Track",
+            Self::Artist => "Artist",
+            Self::Album => "Album",
+        }
+    }
+
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::Playlist => Self::Track,
+            Self::Track => Self::Artist,
+            Self::Artist => Self::Album,
+            Self::Album => Self::Playlist,
+        }
+    }
+}
+
 impl MoveDirection {
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {

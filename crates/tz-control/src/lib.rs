@@ -33,6 +33,8 @@ pub enum Command {
     },
     CycleRepeat,
     ToggleShuffle,
+    /// Cycle the non-destructive playlist view order.
+    CyclePlaylistSort,
     PlayItem {
         item_id: i64,
     },

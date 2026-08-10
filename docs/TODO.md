@@ -128,6 +128,10 @@ All four done.
   compatibility evaluation.
 
 ## Tier 4 — Nice to haves (do last)
-- (nice to have) add columns for Artist/album/track with sorting options.
+- [x] **Add Track, Artist, and Album columns with sorting.** The playlist uses
+  width-aware aligned columns and `o` cycles persisted Playlist, Track, Artist,
+  and Album view orders while preserving selection and active find results.
+  Sorting is deliberately non-destructive: playback/editor order remains the
+  playlist's stored order, and main-view reordering requires Playlist mode.
 - Allow usage of some color/formatting in the TUI. It needs to be easily configurable, the config should not happen IN the player, but read from a config so people who want to make themes can. (this is a nice to have, a wanted nice to have)
 - Addition of mouse support. the program MUST remain fully keyboard functional, but mouse functionality is a very strong desire.

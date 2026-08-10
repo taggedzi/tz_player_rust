@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tz_control::{Command, ControlError, TransportSnapshot};
-use tz_db::{DraftRow, MoveDirection, PlaylistRow, PlaylistStore};
+use tz_db::{DraftRow, MoveDirection, PlaylistRow, PlaylistSort, PlaylistStore};
 use tz_playback::{BackendKind, BackendStatus};
 
 use crate::levels::LevelService;
@@ -83,6 +83,7 @@ pub struct AppRuntime {
     pub app_state: AppState,
     pub playlist_id: i64,
     pub cursor_index: usize,
+    pub playlist_sort: PlaylistSort,
     pub quit_requested: bool,
     pub status_message: Option<String>,
     pub status_level: StatusLevel,
@@ -160,6 +161,8 @@ pub async fn open_runtime(
         app_state.playback_backend = kind.as_str().into();
     }
     let backend = BackendKind::parse(&app_state.playback_backend).unwrap_or(BackendKind::Vlc);
+    let playlist_sort = PlaylistSort::parse(&app_state.playlist_sort).unwrap_or_default();
+    app_state.playlist_sort = playlist_sort.as_str().into();
 
     let playlist_id = store
         .ensure_playlist("Default")
@@ -222,8 +225,10 @@ pub async fn open_runtime(
     let mut cursor_index = 0usize;
     let mut restored_item_id = None;
     if let Some(item_id) = app_state.current_item_id {
-        if let Ok(Some(idx)) = store.get_item_index(playlist_id, item_id) {
-            cursor_index = idx.saturating_sub(1);
+        if let Ok(ids) = store.list_item_ids_sorted(playlist_id, playlist_sort) {
+            if let Some(idx) = ids.iter().position(|id| *id == item_id) {
+                cursor_index = idx;
+            }
             if player
                 .restore_item_context(playlist_id, item_id)
                 .await
@@ -273,6 +278,7 @@ pub async fn open_runtime(
         app_state,
         playlist_id,
         cursor_index,
+        playlist_sort,
         quit_requested: false,
         status_message: None,
         status_level: StatusLevel::Info,
@@ -390,7 +396,7 @@ impl AppRuntime {
                 .map_err(|e| RuntimeError::Db(e.to_string()));
         }
         self.store
-            .fetch_window(self.playlist_id, offset, limit)
+            .fetch_window_sorted(self.playlist_id, offset, limit, self.playlist_sort)
             .map_err(|e| RuntimeError::Db(e.to_string()))
     }
 
@@ -656,6 +662,7 @@ impl AppRuntime {
             }
             Command::CycleRepeat => self.player.cycle_repeat().await,
             Command::ToggleShuffle => self.player.toggle_shuffle().await,
+            Command::CyclePlaylistSort => self.cycle_playlist_sort(),
             Command::CursorUp => {
                 self.cursor_index = self.cursor_index.saturating_sub(1);
             }
@@ -911,7 +918,26 @@ impl AppRuntime {
             return;
         }
         match self.store.search_item_ids(self.playlist_id, q, 2000) {
-            Ok(ids) => {
+            Ok(mut ids) => {
+                if self.playlist_sort != PlaylistSort::Playlist {
+                    let matches: HashSet<_> = ids.into_iter().collect();
+                    match self
+                        .store
+                        .list_item_ids_sorted(self.playlist_id, self.playlist_sort)
+                    {
+                        Ok(sorted) => {
+                            ids = sorted
+                                .into_iter()
+                                .filter(|id| matches.contains(id))
+                                .collect();
+                        }
+                        Err(e) => {
+                            self.set_warning(format!("Find sort failed: {e}"));
+                            self.find_ids = None;
+                            return;
+                        }
+                    }
+                }
                 let n = ids.len();
                 self.find_ids = Some(ids);
                 self.set_status(format!("Find '{q}': {n} hit(s)"));
@@ -921,6 +947,35 @@ impl AppRuntime {
                 self.find_ids = None;
             }
         }
+    }
+
+    fn cycle_playlist_sort(&mut self) {
+        let selected = self.cursor_item_id();
+        self.playlist_sort = self.playlist_sort.cycle();
+        self.app_state.playlist_sort = self.playlist_sort.as_str().into();
+        self.refresh_find();
+
+        if let Some(item_id) = selected {
+            let ids = if let Some(ids) = &self.find_ids {
+                Ok(ids.clone())
+            } else {
+                self.store
+                    .list_item_ids_sorted(self.playlist_id, self.playlist_sort)
+                    .map_err(|e| e.to_string())
+            };
+            match ids {
+                Ok(ids) => {
+                    self.cursor_index = ids.iter().position(|id| *id == item_id).unwrap_or(0);
+                }
+                Err(error) => self.set_warning(format!("Sort failed: {error}")),
+            }
+        } else {
+            self.cursor_index = 0;
+        }
+        self.set_status(format!(
+            "Sort: {} (view only)",
+            self.playlist_sort.display_name()
+        ));
     }
 
     pub fn set_visualizer_id(&mut self, id: &str) {
@@ -1434,6 +1489,10 @@ impl AppRuntime {
 
     /// Move cursor item one step (shift+up/down).
     pub fn move_cursor_item(&mut self, up: bool) -> Result<(), RuntimeError> {
+        if self.playlist_sort != PlaylistSort::Playlist {
+            self.set_warning("Reorder requires Playlist sort — press o to cycle order");
+            return Ok(());
+        }
         let Some(id) = self.cursor_item_id() else {
             return Ok(());
         };
@@ -1477,12 +1536,15 @@ impl AppRuntime {
             self.find_ids = None;
             self.find_query.clear();
         }
-        match self.store.get_item_index(self.playlist_id, id) {
-            Ok(Some(idx1)) => {
-                self.cursor_index = idx1.saturating_sub(1);
+        match self
+            .store
+            .list_item_ids_sorted(self.playlist_id, self.playlist_sort)
+        {
+            Ok(ids) if ids.contains(&id) => {
+                self.cursor_index = ids.iter().position(|item_id| *item_id == id).unwrap_or(0);
                 self.set_status("Located now-playing track");
             }
-            Ok(None) => self.set_warning("Now-playing track is no longer in the playlist"),
+            Ok(_) => self.set_warning("Now-playing track is no longer in the playlist"),
             Err(e) => self.set_warning(format!("Locate failed: {e}")),
         }
     }
@@ -1495,6 +1557,7 @@ impl AppRuntime {
         self.app_state.speed = snap.speed;
         self.app_state.repeat_mode = snap.repeat_mode.as_str().into();
         self.app_state.shuffle = snap.shuffle;
+        self.app_state.playlist_sort = self.playlist_sort.as_str().into();
         // A transient real-backend startup failure may use fake for this run,
         // but it must not silently replace the user's preferred backend.
         if self.backend_fallback_notice.is_none() {
@@ -1817,6 +1880,80 @@ mod tests {
             db_file: dir.join("db.sqlite3"),
         };
         open_runtime(paths, Some(BackendKind::Fake)).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn playlist_sort_cycle_is_non_destructive_and_preserves_selection() {
+        let mut runtime = test_runtime("playlist_sort").await;
+        let dir = runtime.paths.data_dir.clone();
+        let paths: Vec<_> = (0..3)
+            .map(|index| {
+                let path = dir.join(format!("track_{index}.mp3"));
+                std::fs::write(&path, b"").unwrap();
+                path
+            })
+            .collect();
+        runtime
+            .store
+            .add_tracks(runtime.playlist_id, &paths)
+            .unwrap();
+        let original = runtime
+            .store
+            .fetch_window(runtime.playlist_id, 0, 10)
+            .unwrap();
+        for (row, (title, artist, album)) in original.iter().zip([
+            ("Zulu", "Beta", "Gamma"),
+            ("Alpha", "Zulu", "Beta"),
+            ("Mike", "Alpha", "Zulu"),
+        ]) {
+            runtime
+                .store
+                .upsert_track_meta(
+                    row.track_id,
+                    &tz_db::TrackMeta {
+                        title: Some(title.into()),
+                        artist: Some(artist.into()),
+                        album: Some(album.into()),
+                        year: None,
+                        duration_ms: None,
+                        meta_valid: true,
+                        meta_error: None,
+                        mtime_ns: None,
+                        size_bytes: None,
+                    },
+                )
+                .unwrap();
+        }
+
+        runtime.cursor_index = 0;
+        runtime.handle(Command::CyclePlaylistSort).await.unwrap();
+        assert_eq!(runtime.playlist_sort, PlaylistSort::Track);
+        assert_eq!(runtime.cursor_item_id(), Some(original[0].item_id));
+        assert_eq!(runtime.cursor_index, 2, "Zulu sorts after Alpha and Mike");
+        assert_eq!(
+            runtime
+                .fetch_rows(0, 10)
+                .unwrap()
+                .into_iter()
+                .map(|row| row.title.unwrap())
+                .collect::<Vec<_>>(),
+            ["Alpha", "Mike", "Zulu"]
+        );
+
+        let stored_before = runtime.store.list_item_ids(runtime.playlist_id).unwrap();
+        runtime.move_cursor_item(true).unwrap();
+        assert_eq!(
+            runtime.store.list_item_ids(runtime.playlist_id).unwrap(),
+            stored_before,
+            "reorder must be disabled while a metadata sort is active"
+        );
+
+        runtime.handle(Command::CyclePlaylistSort).await.unwrap();
+        assert_eq!(runtime.playlist_sort, PlaylistSort::Artist);
+        assert_eq!(runtime.cursor_item_id(), Some(original[0].item_id));
+
+        runtime.player.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]

@@ -18,8 +18,8 @@ pub use cache_pruner::{AnalysisCachePruneResult, AnalysisCachePruner};
 pub use envelope_store::EnvelopeStore;
 pub use error::DbError;
 pub use models::{
-    DraftRow, MoveDirection, PlaylistRow, PlaylistSummary, TrackMeta, TrackMetaSnapshot,
-    TrackRecord,
+    DraftRow, MoveDirection, PlaylistRow, PlaylistSort, PlaylistSummary, TrackMeta,
+    TrackMetaSnapshot, TrackRecord,
 };
 pub use playlist_store::PlaylistStore;
 pub use schema::{

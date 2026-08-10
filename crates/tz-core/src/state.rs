@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
+use tz_db::PlaylistSort;
 
 use crate::clamp_speed;
 
@@ -16,6 +17,9 @@ pub struct AppState {
     pub speed: f64,
     pub repeat_mode: String,
     pub shuffle: bool,
+    /// Non-destructive playlist view order: playlist, track, artist, or album.
+    #[serde(default = "default_playlist_sort")]
+    pub playlist_sort: String,
     /// Playback backend: `"vlc"` (default), `"rodio"`, or `"fake"`.
     pub playback_backend: String,
     pub visualizer_id: Option<String>,
@@ -39,6 +43,7 @@ impl Default for AppState {
             speed: 1.0,
             repeat_mode: "off".into(),
             shuffle: false,
+            playlist_sort: default_playlist_sort(),
             playback_backend: "vlc".into(),
             visualizer_id: None,
             visualizer_fps: 10,
@@ -80,8 +85,16 @@ impl AppState {
             "fake" => "fake".into(),
             _ => "vlc".into(),
         };
+        self.playlist_sort = PlaylistSort::parse(&self.playlist_sort)
+            .unwrap_or_default()
+            .as_str()
+            .into();
         self
     }
+}
+
+fn default_playlist_sort() -> String {
+    PlaylistSort::Playlist.as_str().into()
 }
 
 /// Load state from disk, or defaults if missing/invalid. Returns optional user notice.
@@ -209,5 +222,19 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(state.sanitize().playback_backend, "vlc");
+    }
+
+    #[test]
+    fn playlist_sort_is_backward_compatible_and_sanitized() {
+        let mut old_state = serde_json::to_value(AppState::default()).unwrap();
+        old_state.as_object_mut().unwrap().remove("playlist_sort");
+        let loaded: AppState = serde_json::from_value(old_state).unwrap();
+        assert_eq!(loaded.playlist_sort, "playlist");
+
+        let invalid = AppState {
+            playlist_sort: "unexpected".into(),
+            ..Default::default()
+        };
+        assert_eq!(invalid.sanitize().playlist_sort, "playlist");
     }
 }

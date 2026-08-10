@@ -18,6 +18,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use ratatui::Terminal;
 use tz_control::Command;
 use tz_core::{AppRuntime, EditorFocus, EditorOverlay};
+use tz_db::PlaylistSort;
 use visualizers::{VisualizerFrameInput, VisualizerHost};
 
 /// Run the interactive TUI until quit.
@@ -168,6 +169,7 @@ async fn ui_loop(
                         total: count,
                         find_query: &runtime.find_query,
                         playing_item_id: snap.item_id,
+                        sort: runtime.playlist_sort,
                     },
                 );
                 if let Some(viz_area) = viz_area {
@@ -266,6 +268,7 @@ struct PlaylistView<'a> {
     total: usize,
     find_query: &'a str,
     playing_item_id: Option<i64>,
+    sort: PlaylistSort,
 }
 
 fn draw_playlist(
@@ -280,6 +283,7 @@ fn draw_playlist(
         total,
         find_query,
         playing_item_id,
+        sort,
     } = view;
     let items: Vec<ListItem> = if rows.is_empty() {
         let hint = if !find_query.is_empty() {
@@ -298,21 +302,7 @@ fn draw_playlist(
             .enumerate()
             .map(|(i, row)| {
                 let abs = scroll_offset + i;
-                let label = row
-                    .title
-                    .clone()
-                    .or_else(|| {
-                        row.path
-                            .file_name()
-                            .map(|s| s.to_string_lossy().into_owned())
-                    })
-                    .unwrap_or_else(|| row.path.display().to_string());
-                let artist = row.artist.as_deref().unwrap_or("");
-                let rest = if artist.is_empty() {
-                    format!("{:>4}  {label}", abs + 1)
-                } else {
-                    format!("{:>4}  {artist} — {label}", abs + 1)
-                };
+                let rest = playlist_row_columns(row, abs, area.width);
                 let is_cursor = abs == cursor_index;
                 let is_playing = playing_item_id == Some(row.item_id);
                 let marker = if is_playing { ">" } else { " " };
@@ -342,9 +332,15 @@ fn draw_playlist(
     };
 
     let title = if find_query.is_empty() {
-        format!(" Playlist ({total}) ")
+        format!(
+            " Playlist ({total})  Track | Artist | Album  sort:{} ",
+            sort.as_str()
+        )
     } else {
-        format!(" Find '{find_query}' ({total}) ")
+        format!(
+            " Find '{find_query}' ({total})  Track | Artist | Album  sort:{} ",
+            sort.as_str()
+        )
     };
     let list = List::new(items).block(
         Block::default()
@@ -353,6 +349,63 @@ fn draw_playlist(
             .border_style(Style::default().fg(Color::DarkGray)),
     );
     f.render_widget(list, area);
+}
+
+fn playlist_row_columns(row: &tz_db::PlaylistRow, index: usize, area_width: u16) -> String {
+    let track = row
+        .title
+        .clone()
+        .or_else(|| {
+            row.path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| row.path.display().to_string());
+    let prefix = format!("{:>4}  ", index + 1);
+    // Borders consume two cells and the now-playing marker span consumes
+    // three. Keep a compact Track-only fallback for very narrow terminals.
+    let available = (area_width.saturating_sub(2) as usize)
+        .saturating_sub(3)
+        .saturating_sub(prefix.len());
+    if available < 18 {
+        return format!("{prefix}{}", fit_cell(&track, available));
+    }
+
+    let cell_space = available.saturating_sub(6); // two " | " separators
+    let track_width = cell_space / 2;
+    let artist_width = (cell_space - track_width) / 2;
+    let album_width = cell_space - track_width - artist_width;
+    format!(
+        "{prefix}{} | {} | {}",
+        fit_cell(&track, track_width),
+        fit_cell(row.artist.as_deref().unwrap_or(""), artist_width),
+        fit_cell(row.album.as_deref().unwrap_or(""), album_width),
+    )
+}
+
+fn fit_cell(value: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if Line::from(value).width() <= width {
+        let padding = width - Line::from(value).width();
+        return format!("{value}{}", " ".repeat(padding));
+    }
+
+    let content_width = width.saturating_sub(1);
+    let mut out = String::new();
+    for ch in value.chars() {
+        let mut candidate = out.clone();
+        candidate.push(ch);
+        if Line::from(candidate.as_str()).width() > content_width {
+            break;
+        }
+        out.push(ch);
+    }
+    out.push('…');
+    let padding = width.saturating_sub(Line::from(out.as_str()).width());
+    out.push_str(&" ".repeat(padding));
+    out
 }
 
 fn draw_visualizer(
@@ -568,7 +621,7 @@ fn draw_footer(
     } else if input_mode == "help" {
         "Esc / q / any key — close help".into()
     } else {
-        "↑/↓ Space n/p x ←/→ -/+ [] r/s f a d c m z i g  Z=hide-viz  ?=help  q quit".into()
+        "↑/↓ Space n/p x ←/→ -/+ [] r/s f o a d c m z i g  Z=hide-viz  ?=help  q quit".into()
     };
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -690,8 +743,13 @@ fn help_lines() -> Vec<Line<'static>> {
             "Edit playlist in editor",
         ),
         e2("c", "Open editor", "m", "Refresh metadata"),
-        e2("f", "Find", "F10", "Apply editor changes"),
-        e1("Ctrl+Up/Down", "Reorder in editor"),
+        e2("f", "Find", "o", "Cycle view sort"),
+        e2(
+            "F10",
+            "Apply editor changes",
+            "Ctrl+Up/Down",
+            "Reorder in editor",
+        ),
         section("View"),
         e2("z", "Cycle visualizer", "i", "About / version"),
         e1("Shift+Z", "Hide/show visualizer pane"),
@@ -1193,6 +1251,9 @@ async fn handle_key(
         KeyCode::Char('g') => {
             let _ = runtime.handle(Command::LocatePlaying).await;
         }
+        KeyCode::Char('o') => {
+            let _ = runtime.handle(Command::CyclePlaylistSort).await;
+        }
         KeyCode::Home => {
             runtime.cursor_index = 0;
         }
@@ -1378,6 +1439,7 @@ mod tests {
                         total: rows.len(),
                         find_query: "",
                         playing_item_id,
+                        sort: PlaylistSort::Playlist,
                     },
                 );
             })
@@ -1431,6 +1493,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn playlist_rows_show_track_artist_and_album_columns() {
+        let mut item = row(1, "Track One");
+        item.artist = Some("Artist".into());
+        item.album = Some("Album".into());
+
+        let buf = render(&[item], 0, None);
+        let text = row_text(&buf, 1);
+        assert!(text.contains("Track One"), "row was: {text:?}");
+        assert!(text.contains("Artist"), "row was: {text:?}");
+        assert!(text.contains("Album"), "row was: {text:?}");
+    }
+
     fn buffer_text(buf: &Buffer) -> String {
         let mut text = String::new();
         for y in 0..buf.area.height {
@@ -1461,6 +1536,7 @@ mod tests {
             "Locate now-playing track",
             "Edit playlist in editor",
             "Refresh metadata",
+            "Cycle view sort",
             "Reorder",
             "Cycle visualizer",
             "About",
@@ -1923,6 +1999,26 @@ mod tests {
         assert_ne!(viz.active_id(), before);
         assert!(!runtime.visualizer_hidden);
 
+        let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
+    }
+
+    #[tokio::test]
+    async fn o_cycles_the_playlist_view_sort_from_the_keyboard() {
+        let mut runtime = bare_test_runtime("playlist_sort_key").await;
+        let mut viz = VisualizerHost::new(false);
+        assert_eq!(runtime.playlist_sort, PlaylistSort::Playlist);
+
+        handle_key(
+            &mut runtime,
+            &mut viz,
+            KeyCode::Char('o'),
+            KeyModifiers::NONE,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(runtime.playlist_sort, PlaylistSort::Track);
+        assert_eq!(runtime.app_state.playlist_sort, "track");
         let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
     }
 }
