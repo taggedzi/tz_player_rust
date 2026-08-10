@@ -6,6 +6,8 @@
 mod backend;
 mod events;
 mod fake;
+#[cfg(test)]
+mod rodio_engine;
 mod status;
 mod vlc;
 mod vlc_engine;
