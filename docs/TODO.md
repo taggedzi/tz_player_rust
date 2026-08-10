@@ -113,7 +113,10 @@ All four done.
 
 ## Tier 3 — Larger feature work
 - [x] **Dual-pane staged playlist editor** — implemented in `crates/tz-core`, `crates/tz-db`, and `crates/tz-tui` using the approved design in `docs/superpowers/specs/2026-08-09-dual-pane-playlist-editor-design.md`. `a` opens a full-screen files/playlist editor; edits use transient SQLite draft rows; F10/Ctrl+Enter applies after a successful stop; saved playlists support load/save-as/rename/delete with the active Default playlist protected. Recursive scans are iterative, deterministic, and skip symlink directories. Portable-media path rebasing remains a separate future feature.
-- All of the visualizations from the python version need to be ported. some already are, but the rest should be.
+- [x] **Port every Python visualization.** The Rust host preserves all 25
+  built-in Python plugin IDs and adds `spectrum.bars` for 26 total. The
+  inventory is locked by a registry test, while focused rendering tests cover
+  the shared spectrum, waveform, cover-art, matrix, and particle families.
 - [x] Remove multi-select from the playlist-edit workflow; ordering and additions now happen in the staged editor. Existing legacy browse commands remain only for compatibility and are not used by the `a` path.
 - [ ] **Add and evaluate an experimental Rodio playback backend alongside VLC.**
   Keep VLC as the default while `--backend rodio` is tested for transport parity,

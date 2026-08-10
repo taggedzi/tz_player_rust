@@ -173,3 +173,51 @@ pub fn heat_color(level: f32, color: bool) -> Color {
         Color::Rgb(255, (160.0 - 100.0 * u) as u8, (30.0 + 20.0 * u) as u8)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn built_in_inventory_preserves_every_python_visualizer_id() {
+        let host = VisualizerHost::new(false);
+        let mut ids: Vec<_> = host
+            .plugins
+            .iter()
+            .map(|plugin| plugin.plugin_id())
+            .collect();
+        ids.sort_unstable();
+
+        assert_eq!(
+            ids,
+            [
+                "basic",
+                "cover.ascii.motion",
+                "cover.ascii.static",
+                "matrix.blue",
+                "matrix.green",
+                "matrix.red",
+                "ops.hackscope",
+                "spectrum.bars",
+                "viz.particle.audio_tornado",
+                "viz.particle.constellation",
+                "viz.particle.data_core_frag",
+                "viz.particle.ember_field",
+                "viz.particle.gravity_well",
+                "viz.particle.magnetic_grid",
+                "viz.particle.orbital_system",
+                "viz.particle.plasma_stream",
+                "viz.particle.rain_reactive",
+                "viz.particle.shockwave_rings",
+                "viz.reactor.particles",
+                "viz.spectrogram.waterfall",
+                "viz.spectrum.radial",
+                "viz.spectrum.terrain",
+                "viz.typography.glitch",
+                "viz.waveform.neon",
+                "viz.waveform.proxy",
+                "vu.reactive",
+            ]
+        );
+    }
+}
