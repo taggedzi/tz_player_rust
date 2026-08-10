@@ -42,7 +42,7 @@ remains the default throughout this plan.
   an experimental Rodio backend; its crate boundaries and analysis split remain.
 - Add Rodio with default features disabled and only playback, tracing,
   Symphonia stable-all, and stable SIMD features enabled.
-- Confirm the resolved CPAL/Symphonia versions preserve Rust 1.88 support.
+- Confirm the resolved CPAL/Symphonia versions preserve Rust 1.89 support.
 - Inspect the complete new dependency and license graph before source work.
 - Do not add a direct CPAL dependency unless doctor/device functionality cannot
   be expressed through Rodio; document the reason if it becomes necessary.
@@ -52,7 +52,7 @@ remains the default throughout this plan.
 ```text
 cargo generate-lockfile --offline
 cargo check -p tz-playback --all-targets
-cargo audit --locked
+cargo audit
 cargo deny check
 ```
 
@@ -302,7 +302,7 @@ cargo fmt --all -- --check
 cargo check --workspace --all-targets
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets -- -D warnings
-cargo audit --locked
+cargo audit
 cargo deny check
 ```
 

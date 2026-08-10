@@ -1,6 +1,6 @@
 [package]
 name = "tz-playback"
-description = "Playback backends for tz-player (VLC listen path + fake)"
+description = "Playback backends for tz-player (VLC, experimental Rodio, and fake)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -14,3 +14,4 @@ thiserror.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
 libloading = { workspace = true }
+rodio = { workspace = true }

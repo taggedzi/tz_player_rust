@@ -25,15 +25,15 @@ Users select it with `--backend rodio`. Selection persists using the existing
 application-state field. Adding Rodio does not silently change an existing
 user's backend, remove VLC, or claim VLC-equivalent format support.
 
-The evaluated dependency baseline is Rodio 0.22.2 and Symphonia 0.6.0. Rodio's
-`Player` supports pause, stop, volume, speed, position, and seek, while its
-Symphonia decoder features cover the common music formats needed for an initial
-candidate. Primary references:
+The locked dependency baseline is Rodio 0.22.2, its compatible Symphonia 0.5.5,
+and CPAL 0.17.3. Rodio's `Player` supports pause, stop, volume, speed, position,
+and seek, while its Symphonia decoder features cover the common music formats
+needed for an initial candidate. Primary references:
 
 - <https://docs.rs/rodio/0.22.2/rodio/struct.Player.html>
 - <https://docs.rs/rodio/0.22.2/rodio/decoder/index.html>
-- <https://docs.rs/symphonia/0.6.0/symphonia/index.html>
-- <https://docs.rs/cpal/0.18.1/cpal/>
+- <https://docs.rs/symphonia/0.5.5/symphonia/index.html>
+- <https://docs.rs/cpal/0.17.3/cpal/>
 
 ## Goals
 
@@ -86,7 +86,8 @@ rodio = {
 ```
 
 The exact compatible version is locked in `Cargo.lock` and must pass the
-repository's audit, deny, license, MSRV, Clippy, and cross-platform CI policy.
+repository's audit, deny, license, Rust 1.89 MSRV, Clippy, and cross-platform CI
+policy.
 Rodio uses CPAL for output. Windows uses the normal Windows audio backend and
 macOS uses CoreAudio; neither requires shipping VLC-style codec DLLs. Linux
 builds using the standard ALSA path require ALSA development files (for example
@@ -267,9 +268,9 @@ an unbounded full-track allocation. Panics from worker setup or decode must not
 cross the process boundary as undefined application state; worker termination
 is converted into a backend error.
 
-The new dependency graph must pass `cargo audit --locked` and
-`cargo deny check`. Any advisory or license exception requires a separate,
-owned decision rather than being hidden in the backend commit.
+The new dependency graph must pass `cargo audit` and `cargo deny check`. Any
+advisory or license exception requires a separate, owned decision rather than
+being hidden in the backend commit.
 
 ## Testing strategy
 
