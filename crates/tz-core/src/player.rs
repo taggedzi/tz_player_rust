@@ -9,7 +9,7 @@ use tz_control::TransportSnapshot;
 use tz_db::{PlaylistRow, PlaylistStore};
 use tz_playback::{
     BackendKind, BackendStatus, FakePlaybackBackend, PlaybackBackend, PlaybackError,
-    VlcPlaybackBackend,
+    RodioPlaybackBackend, VlcPlaybackBackend,
 };
 
 use crate::{clamp_speed, SPEED_MAX, SPEED_MIN, SPEED_STEP};
@@ -93,6 +93,7 @@ impl Default for PlayerState {
 
 enum Engine {
     Fake(FakePlaybackBackend),
+    Rodio(RodioPlaybackBackend),
     Vlc(VlcPlaybackBackend),
 }
 
@@ -100,6 +101,7 @@ impl Engine {
     fn as_backend_mut(&mut self) -> &mut dyn PlaybackBackend {
         match self {
             Self::Fake(b) => b,
+            Self::Rodio(b) => b,
             Self::Vlc(b) => b,
         }
     }
@@ -124,6 +126,7 @@ impl PlayerService {
     pub fn new(store: PlaylistStore, backend: BackendKind) -> Self {
         let engine = match backend {
             BackendKind::Fake => Engine::Fake(FakePlaybackBackend::new()),
+            BackendKind::Rodio => Engine::Rodio(RodioPlaybackBackend::new()),
             BackendKind::Vlc => Engine::Vlc(VlcPlaybackBackend::new()),
         };
         let state = PlayerState {
@@ -614,10 +617,9 @@ pub enum PlayerError {
 }
 
 impl PlayerError {
-    /// True only for failures in the actual audio backend (VLC/libVLC) —
-    /// i.e. playback is genuinely disrupted. `Db`/`Message` cover data-layer
-    /// problems (e.g. a missing playlist row) where audio itself isn't
-    /// necessarily broken.
+    /// True only for failures in the selected audio backend — i.e. playback is
+    /// genuinely disrupted. `Db`/`Message` cover data-layer problems (e.g. a
+    /// missing playlist row) where audio itself is not necessarily broken.
     pub fn is_backend_failure(&self) -> bool {
         matches!(self, PlayerError::Playback(_))
     }

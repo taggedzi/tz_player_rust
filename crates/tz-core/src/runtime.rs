@@ -19,6 +19,26 @@ use crate::terminal::terminal_safe;
 const STATUS_TTL: Duration = Duration::from_secs(4);
 const VLC_START_ATTEMPTS: usize = 3;
 
+fn real_backend_start_attempts(backend: BackendKind) -> usize {
+    match backend {
+        BackendKind::Vlc => VLC_START_ATTEMPTS,
+        BackendKind::Rodio | BackendKind::Fake => 1,
+    }
+}
+
+fn backend_fallback_message(backend: BackendKind, attempts: usize, details: &str) -> String {
+    let label = match backend {
+        BackendKind::Vlc => "VLC",
+        BackendKind::Rodio => "Rodio",
+        BackendKind::Fake => "Fake",
+    };
+    let attempt_word = if attempts == 1 { "attempt" } else { "attempts" };
+    format!(
+        "{label} failed after {attempts} {attempt_word} ({details}); requested {} but using fake backend",
+        backend.as_str()
+    )
+}
+
 /// Severity of the current footer status message. Only `Error` (reserved for
 /// playback-backend failures — the audio path itself is disrupted) survives
 /// past `STATUS_TTL`; it stays until explicitly dismissed. `Warn` and `Info`
@@ -103,7 +123,7 @@ pub struct AppRuntime {
     /// Collapses the visualizer pane (playlist takes the full width) when
     /// true. Session-only — not persisted to `AppState`.
     pub visualizer_hidden: bool,
-    /// Fallback notice when VLC could not start.
+    /// Fallback notice when the requested real backend could not start.
     pub backend_fallback_notice: Option<String>,
     last_level: Option<(f32, f32, String)>,
     last_spectrum: Option<(Vec<u8>, String)>,
@@ -148,10 +168,11 @@ pub async fn open_runtime(
 
     let mut backend_fallback_notice = None;
     let mut player = PlayerService::new(PlaylistStore::new(paths.db_file.clone()), backend);
-    if matches!(backend, BackendKind::Vlc) {
+    if !matches!(backend, BackendKind::Fake) {
+        let attempts = real_backend_start_attempts(backend);
         let mut failures = Vec::new();
         let mut started = false;
-        for attempt in 1..=VLC_START_ATTEMPTS {
+        for attempt in 1..=attempts {
             match player.start().await {
                 Ok(()) => {
                     started = true;
@@ -160,14 +181,13 @@ pub async fn open_runtime(
                 Err(error) => {
                     failures.push(format!("attempt {attempt}: {error}"));
                     let safe_error = terminal_safe(error.to_string());
-                    tracing::warn!(attempt, error = %safe_error, "VLC backend failed to start");
-                    if attempt < VLC_START_ATTEMPTS {
+                    tracing::warn!(backend = backend.as_str(), attempt, error = %safe_error, "playback backend failed to start");
+                    if attempt < attempts {
                         tokio::time::sleep(Duration::from_millis(150 * attempt as u64)).await;
-                        // Re-run discovery as well as dynamic loading on every attempt.
-                        player = PlayerService::new(
-                            PlaylistStore::new(paths.db_file.clone()),
-                            BackendKind::Vlc,
-                        );
+                        // Recreate the complete backend so discovery/device
+                        // initialization is retried from a clean state.
+                        player =
+                            PlayerService::new(PlaylistStore::new(paths.db_file.clone()), backend);
                     }
                 }
             }
@@ -175,16 +195,14 @@ pub async fn open_runtime(
         if !started {
             let details = failures.join("; ");
             let safe_details = terminal_safe(&details);
-            tracing::error!(details = %safe_details, "all VLC startup attempts failed; falling back to fake");
+            tracing::error!(backend = backend.as_str(), details = %safe_details, "all playback backend startup attempts failed; falling back to fake");
             player =
                 PlayerService::new(PlaylistStore::new(paths.db_file.clone()), BackendKind::Fake);
             player
                 .start()
                 .await
                 .map_err(|e| RuntimeError::Playback(e.to_string()))?;
-            backend_fallback_notice = Some(format!(
-                "VLC failed after {VLC_START_ATTEMPTS} attempts ({details}); using fake backend"
-            ));
+            backend_fallback_notice = Some(backend_fallback_message(backend, attempts, &details));
         }
     } else {
         player
@@ -1477,7 +1495,7 @@ impl AppRuntime {
         self.app_state.speed = snap.speed;
         self.app_state.repeat_mode = snap.repeat_mode.as_str().into();
         self.app_state.shuffle = snap.shuffle;
-        // A transient VLC startup failure may use fake playback for this run,
+        // A transient real-backend startup failure may use fake for this run,
         // but it must not silently replace the user's preferred backend.
         if self.backend_fallback_notice.is_none() {
             self.app_state.playback_backend = snap.backend.as_str().into();
@@ -1727,6 +1745,22 @@ pub enum RuntimeError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn real_backends_use_backend_specific_startup_attempts() {
+        assert_eq!(real_backend_start_attempts(BackendKind::Vlc), 3);
+        assert_eq!(real_backend_start_attempts(BackendKind::Rodio), 1);
+        assert_eq!(real_backend_start_attempts(BackendKind::Fake), 1);
+    }
+
+    #[test]
+    fn rodio_fallback_notice_names_requested_and_effective_backends() {
+        let notice = backend_fallback_message(BackendKind::Rodio, 1, "no output device");
+
+        assert!(notice.contains("Rodio failed after 1 attempt"));
+        assert!(notice.contains("requested rodio"));
+        assert!(notice.contains("using fake backend"));
+    }
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(

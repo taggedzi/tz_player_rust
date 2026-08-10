@@ -16,7 +16,7 @@ pub struct AppState {
     pub speed: f64,
     pub repeat_mode: String,
     pub shuffle: bool,
-    /// Playback backend: `"vlc"` (default) or `"fake"`.
+    /// Playback backend: `"vlc"` (default), `"rodio"`, or `"fake"`.
     pub playback_backend: String,
     pub visualizer_id: Option<String>,
     pub visualizer_fps: u32,
@@ -76,6 +76,7 @@ impl AppState {
         }
         let backend = self.playback_backend.to_ascii_lowercase();
         self.playback_backend = match backend.as_str() {
+            "rodio" => "rodio".into(),
             "fake" => "fake".into(),
             _ => "vlc".into(),
         };
@@ -188,5 +189,25 @@ mod tests {
         assert!(notice.is_some());
         assert_eq!(state, AppState::default());
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn all_backend_values_sanitize_and_round_trip() {
+        for backend in ["vlc", "rodio", "fake"] {
+            let path = temp_state();
+            let state = AppState {
+                playback_backend: backend.to_ascii_uppercase(),
+                ..Default::default()
+            };
+            save_state(&path, &state).unwrap();
+            assert_eq!(load_state(&path).playback_backend, backend);
+            let _ = fs::remove_file(path);
+        }
+
+        let state = AppState {
+            playback_backend: "removed-backend".into(),
+            ..Default::default()
+        };
+        assert_eq!(state.sanitize().playback_backend, "vlc");
     }
 }

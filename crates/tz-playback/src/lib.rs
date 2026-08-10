@@ -29,6 +29,7 @@ pub use vlc::{configure_vlc_environment, discover_vlc, VlcDiscovery, VlcPlayback
 pub enum BackendKind {
     #[default]
     Vlc,
+    Rodio,
     Fake,
 }
 
@@ -36,6 +37,7 @@ impl BackendKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Vlc => "vlc",
+            Self::Rodio => "rodio",
             Self::Fake => "fake",
         }
     }
@@ -43,8 +45,27 @@ impl BackendKind {
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {
             "vlc" => Some(Self::Vlc),
+            "rodio" => Some(Self::Rodio),
             "fake" => Some(Self::Fake),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod backend_kind_tests {
+    use super::BackendKind;
+
+    #[test]
+    fn backend_identifiers_round_trip_and_vlc_remains_default() {
+        assert_eq!(BackendKind::default(), BackendKind::Vlc);
+        for kind in [BackendKind::Vlc, BackendKind::Rodio, BackendKind::Fake] {
+            assert_eq!(BackendKind::parse(kind.as_str()), Some(kind));
+            assert_eq!(
+                BackendKind::parse(&kind.as_str().to_ascii_uppercase()),
+                Some(kind)
+            );
+        }
+        assert_eq!(BackendKind::parse("unknown"), None);
     }
 }

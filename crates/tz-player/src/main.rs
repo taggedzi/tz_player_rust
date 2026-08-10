@@ -21,6 +21,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Debug, Clone, ValueEnum)]
 enum BackendCli {
     Vlc,
+    Rodio,
     Fake,
 }
 
@@ -28,6 +29,7 @@ impl From<BackendCli> for BackendKind {
     fn from(value: BackendCli) -> Self {
         match value {
             BackendCli::Vlc => BackendKind::Vlc,
+            BackendCli::Rodio => BackendKind::Rodio,
             BackendCli::Fake => BackendKind::Fake,
         }
     }
@@ -39,12 +41,12 @@ impl From<BackendCli> for BackendKind {
     version,
     about = "TaggedZ's terminal music player (Rust rewrite)",
     long_about = "Local-first TUI music player.\n\
-                  Playback: VLC/libVLC (required for real audio; loads libvlc dynamically).\n\
+                  Playback: VLC/libVLC (default) or experimental Rodio.\n\
                   Analysis/visualizers: FFmpeg (optional).\n\
                   See `tz-player doctor` for environment checks."
 )]
 struct Cli {
-    /// Playback backend (default: vlc; falls back to fake if VLC cannot start)
+    /// Playback backend (default: vlc; unavailable real backends fall back to fake)
     #[arg(long, value_enum, default_value_t = BackendCli::Vlc)]
     backend: BackendCli,
 
@@ -302,6 +304,7 @@ fn cmd_doctor(backend: BackendKind) -> ExitCode {
 
     match backend {
         BackendKind::Vlc => println!("[INFO] Selected backend: vlc"),
+        BackendKind::Rodio => println!("[INFO] Selected backend: rodio (experimental)"),
         BackendKind::Fake => {
             println!("[INFO] Selected backend: fake (no real audio; VLC optional)")
         }
@@ -434,6 +437,13 @@ fn cmd_paths() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_accepts_explicit_rodio_backend() {
+        let cli = Cli::try_parse_from(["tz-player", "--backend", "rodio", "about"]).unwrap();
+
+        assert!(matches!(cli.backend, BackendCli::Rodio));
+    }
 
     #[test]
     fn interactive_tui_logs_to_a_file_by_default() {
