@@ -1,5 +1,6 @@
 //! Rodio output device and player ownership on a dedicated worker thread.
 
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
@@ -62,6 +63,16 @@ pub struct RodioOutputInfo {
     pub channels: u16,
     pub sample_rate: u32,
     pub sample_format: String,
+}
+
+impl fmt::Display for RodioOutputInfo {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{} channel(s), {} Hz, {}",
+            self.channels, self.sample_rate, self.sample_format
+        )
+    }
 }
 
 pub(crate) struct RodioWorker {

@@ -14,7 +14,9 @@ use tz_core::{
     terminal_safe_path, AppState,
 };
 use tz_db::{open_database, SCHEMA_VERSION};
-use tz_playback::{configure_vlc_environment, discover_vlc, BackendKind};
+use tz_playback::{
+    configure_vlc_environment, discover_vlc, probe_rodio_output, BackendKind, RodioOutputInfo,
+};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -47,7 +49,7 @@ impl From<BackendCli> for BackendKind {
 )]
 struct Cli {
     /// Playback backend (default: vlc; unavailable real backends fall back to fake)
-    #[arg(long, value_enum, default_value_t = BackendCli::Vlc)]
+    #[arg(long, value_enum, default_value_t = BackendCli::Vlc, global = true)]
     backend: BackendCli,
 
     /// Enable verbose (debug) logging
@@ -68,9 +70,9 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Run environment diagnostics (VLC required for real audio, FFmpeg optional)
+    /// Diagnose the selected playback backend and optional FFmpeg analysis
     Doctor,
-    /// Guided setup notes for VLC and FFmpeg
+    /// Guided setup notes for VLC, Rodio, and FFmpeg
     Setup,
     /// Print resolved paths and schema version
     Paths,
@@ -274,39 +276,49 @@ fn cmd_doctor(backend: BackendKind) -> ExitCode {
     println!("==========================");
     println!();
     println!("Media roles:");
-    println!("  Playback (listen path): VLC / libVLC");
+    println!("  Playback (listen path): {}", playback_role(backend));
     println!("  Analysis / visualizers: FFmpeg (optional) + native WAV");
     println!();
 
     let mut ok = true;
     let mut warns = 0u32;
-    let discovery = discover_vlc();
-
-    if let Some(exe) = &discovery.vlc_executable {
-        println!("[OK]   VLC executable: {}", terminal_safe_path(exe));
-    } else {
-        println!("[WARN] VLC executable not found on PATH / common install paths");
-        warns += 1;
-    }
-    if let Some(dir) = &discovery.libvlc_dir {
-        println!("[OK]   libVLC directory: {}", terminal_safe_path(dir));
-        println!("[OK]   libVLC dynamic load path ready (runtime FFI)");
-    } else {
-        println!("[WARN] libVLC not found in common install paths");
-        warns += 1;
-        if matches!(backend, BackendKind::Vlc) {
-            ok = false;
-        }
-    }
-    for note in &discovery.notes {
-        println!("       note: {}", terminal_safe(note));
-    }
 
     match backend {
-        BackendKind::Vlc => println!("[INFO] Selected backend: vlc"),
-        BackendKind::Rodio => println!("[INFO] Selected backend: rodio (experimental)"),
+        BackendKind::Vlc => {
+            println!("[INFO] Selected backend: vlc (default)");
+            let discovery = discover_vlc();
+            if let Some(exe) = &discovery.vlc_executable {
+                println!("[OK]   VLC executable: {}", terminal_safe_path(exe));
+            } else {
+                println!("[WARN] VLC executable not found on PATH / common install paths");
+                warns += 1;
+            }
+            if let Some(dir) = &discovery.libvlc_dir {
+                println!("[OK]   libVLC directory: {}", terminal_safe_path(dir));
+                println!("[OK]   libVLC dynamic load path ready (runtime FFI)");
+            } else {
+                println!("[FAIL] libVLC not found in common install paths");
+                ok = false;
+            }
+            for note in &discovery.notes {
+                println!("       note: {}", terminal_safe(note));
+            }
+        }
+        BackendKind::Rodio => {
+            println!("[INFO] Selected backend: rodio (experimental)");
+            match probe_rodio_output() {
+                Ok(info) => println!("[OK]   Rodio default output: {}", rodio_output_line(&info)),
+                Err(error) => {
+                    println!("[FAIL] Rodio default output: {}", terminal_safe(error));
+                    ok = false;
+                }
+            }
+            println!("[OK]   Rodio format families: {}", rodio_format_families());
+            println!("[INFO] VLC is not required for selected Rodio playback");
+        }
         BackendKind::Fake => {
-            println!("[INFO] Selected backend: fake (no real audio; VLC optional)")
+            println!("[INFO] Selected backend: fake (no audio output is opened)");
+            println!("[INFO] VLC and Rodio output are not required for this run");
         }
     }
 
@@ -314,7 +326,17 @@ fn cmd_doctor(backend: BackendKind) -> ExitCode {
         println!("[OK]   FFmpeg available (analysis / visualizers)");
     } else {
         println!("[WARN] FFmpeg not found — analysis-backed visualizers degrade");
-        println!("       Playback via VLC still works; native WAV analysis only without FFmpeg");
+        match backend {
+            BackendKind::Vlc => {
+                println!("       Selected VLC playback still works; native WAV analysis remains")
+            }
+            BackendKind::Rodio => {
+                println!("       Selected Rodio playback still works; native WAV analysis remains")
+            }
+            BackendKind::Fake => {
+                println!("       Fake transport still works; native WAV analysis remains")
+            }
+        }
         warns += 1;
     }
 
@@ -368,6 +390,22 @@ fn cmd_doctor(backend: BackendKind) -> ExitCode {
     }
 }
 
+fn playback_role(backend: BackendKind) -> &'static str {
+    match backend {
+        BackendKind::Vlc => "VLC / libVLC (default)",
+        BackendKind::Rodio => "Rodio / Symphonia / system audio (experimental)",
+        BackendKind::Fake => "Fake transport (no audio)",
+    }
+}
+
+fn rodio_output_line(info: &RodioOutputInfo) -> String {
+    terminal_safe(info.to_string())
+}
+
+fn rodio_format_families() -> &'static str {
+    "MP1/MP2/MP3, FLAC, WAV/ADPCM, Ogg Vorbis, AAC, ALAC, AIFF, CAF, Matroska/WebM"
+}
+
 fn exe_suffix() -> &'static str {
     if cfg!(windows) {
         ".exe"
@@ -380,15 +418,21 @@ fn cmd_setup() {
     println!("tz-player setup  v{VERSION}");
     println!("=========================");
     println!();
-    println!("1) Playback — install VLC (required for real audio)");
-    println!("   https://www.videolan.org/vlc/");
+    println!("1) Playback — choose a backend");
+    println!("   VLC (default): broad compatibility; install VLC from");
+    println!("     https://www.videolan.org/vlc/");
     if cfg!(windows) {
-        println!("   Windows: winget install VideoLAN.VLC");
+        println!("     Windows: winget install VideoLAN.VLC");
     } else if cfg!(target_os = "macos") {
-        println!("   macOS:   brew install --cask vlc");
+        println!("     macOS:   brew install --cask vlc");
     } else {
-        println!("   Linux:   install VLC via your package manager (libvlc + plugins)");
+        println!("     Linux:   install VLC via your package manager (libvlc + plugins)");
     }
+    println!("   Rodio (experimental): no VLC codec runtime; select --backend rodio");
+    if cfg!(target_os = "linux") {
+        println!("     Linux source builds need ALSA development files (libasound2-dev on Ubuntu)");
+    }
+    println!("   Fake: no-audio testing; select --backend fake");
     println!();
     println!("2) Analysis — install FFmpeg (optional, for visualizers)");
     if cfg!(windows) {
@@ -403,16 +447,19 @@ fn cmd_setup() {
     println!("   cargo build --release -p tz-player");
     println!("   # output: target/release/tz-player{}", exe_suffix());
     println!();
-    println!("4) Verify:  tz-player doctor --backend vlc");
+    println!("4) Verify:  tz-player --backend vlc doctor");
+    println!("             tz-player --backend rodio doctor");
     println!("5) Add music: tz-player add path/to/song.mp3");
-    println!("6) Run: tz-player   (or tz-player --backend fake for no-audio tests)");
+    println!("6) Run: tz-player   (VLC default)");
+    println!("        tz-player --backend rodio");
+    println!("        tz-player --backend fake   # no audio");
     println!();
     println!("Data lives under a separate identity from the Python app:");
     let paths = app_paths_or_cwd();
     println!("  {}", terminal_safe_path(&paths.data_dir));
     println!();
-    println!("Note: FFmpeg is never used for the listen path in v1.");
-    println!("      VLC plays audio; FFmpeg feeds offline analysis only.");
+    println!("Note: FFmpeg is not used by either real playback backend.");
+    println!("      It feeds optional offline analysis and visualizers only.");
     println!();
     println!("See also: docs/RELEASE.md");
 }
@@ -443,6 +490,22 @@ mod tests {
         let cli = Cli::try_parse_from(["tz-player", "--backend", "rodio", "about"]).unwrap();
 
         assert!(matches!(cli.backend, BackendCli::Rodio));
+
+        let cli = Cli::try_parse_from(["tz-player", "doctor", "--backend", "rodio"]).unwrap();
+        assert!(matches!(cli.backend, BackendCli::Rodio));
+    }
+
+    #[test]
+    fn rodio_doctor_helpers_are_stable_and_hardware_independent() {
+        let info = RodioOutputInfo {
+            channels: 2,
+            sample_rate: 48_000,
+            sample_format: "F32".into(),
+        };
+
+        assert_eq!(rodio_output_line(&info), "2 channel(s), 48000 Hz, F32");
+        assert!(playback_role(BackendKind::Rodio).contains("experimental"));
+        assert!(rodio_format_families().contains("AAC"));
     }
 
     #[test]
