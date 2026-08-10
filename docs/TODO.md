@@ -43,12 +43,13 @@ release-hardening phase.
 
 ### Security Tier 2 — Security hardening
 
-- [ ] **Make the LibVLC ABI explicit and fail closed.** Load and validate
-  `libvlc_get_version`; explicitly support VLC 3 and/or VLC 4 and reject other
-  majors; maintain separate signatures and time-unit conversions; represent C
-  enum returns as integers and validate them before conversion; and test
-  unknown states and unsupported versions. **Done when:** no foreign function
-  can be called through a signature from the wrong LibVLC ABI.
+- [x] **Make the LibVLC ABI explicit and fail closed.** The stable
+  `libvlc_get_version` discovery symbol is loaded first; only validated VLC 3.x
+  libraries resolve the dedicated V3 function table and millisecond
+  conversions. VLC 4 and unknown majors are rejected before ABI-specific
+  lookup because V4 construction/seeking differs. C states cross as integers
+  and are checked before conversion; unsupported versions, unknown states, and
+  V3 time units have regression tests.
 - [ ] **Remove the affected `lru 0.12.5` dependency.** Upgrade Ratatui or
   otherwise move to `lru >= 0.16.3`, then rerun tests, Clippy, and
   `cargo audit`. **Done when:** RUSTSEC-2026-0002 is absent from the lockfile

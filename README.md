@@ -10,7 +10,7 @@ Rust rewrite of [tz-player](https://github.com/taggedzi/tz-player) — a keyboar
 
 | Role | Technology |
 |------|------------|
-| **Playback (listen path)** | **VLC / libVLC** (dynamic load from install; required for real audio) |
+| **Playback (listen path)** | **VLC 3.x / libVLC** (dynamic load from install; required for real audio; other majors fail closed) |
 | **Analysis / visualizers** | **FFmpeg** (optional) + native WAV |
 | **Tests / fallback** | Fake playback backend |
 

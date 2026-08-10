@@ -7,7 +7,9 @@ tz-player setup
 tz-player doctor
 ```
 
-- **VLC** — required for real audio (libVLC loaded at runtime).
+- **VLC 3.x** — required for real audio (libVLC loaded at runtime). The VLC 4
+  ABI changes player construction, seek signatures, and clocks to
+  microseconds; tz-player rejects it until a complete VLC 4 backend exists.
 - **FFmpeg** — optional; improves analysis for spectrum / beat / waveform visualizers.
 
 ## Common commands
