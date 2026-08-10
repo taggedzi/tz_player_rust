@@ -267,7 +267,8 @@ impl PlayerService {
                 if dur > 0 {
                     s.duration_ms = dur;
                 }
-                // Natural end advance for fake backend
+                // Every backend reports natural completion as Stopped at the
+                // known end position. Explicit Stop is excluded separately.
                 if status == BackendStatus::Stopped
                     && !self.stop_requested
                     && s.item_id.is_some()
@@ -320,21 +321,37 @@ impl PlayerService {
         };
         match repeat {
             RepeatMode::One => self.play_item(playlist_id, item_id).await,
-            RepeatMode::All | RepeatMode::Off => {
+            RepeatMode::All => {
                 if let Some(next) = self
                     .resolve_next(playlist_id, item_id, shuffle, true)
                     .await?
                 {
-                    if next != item_id || matches!(repeat, RepeatMode::All) {
-                        self.play_item(playlist_id, next).await
-                    } else {
-                        Ok(())
-                    }
+                    self.play_item(playlist_id, next).await
                 } else {
+                    self.finish_natural_end().await;
+                    Ok(())
+                }
+            }
+            RepeatMode::Off => {
+                if let Some(next) = self
+                    .resolve_next(playlist_id, item_id, shuffle, false)
+                    .await?
+                {
+                    self.play_item(playlist_id, next).await
+                } else {
+                    self.finish_natural_end().await;
                     Ok(())
                 }
             }
         }
+    }
+
+    async fn finish_natural_end(&mut self) {
+        let mut state = self.state.lock().await;
+        state.status = BackendStatus::Stopped;
+        state.position_ms = state.duration_ms;
+        self.real_position_ms = state.duration_ms;
+        self.real_observed_at = None;
     }
 
     pub async fn play_item(&mut self, playlist_id: i64, item_id: i64) -> Result<(), PlayerError> {
@@ -633,6 +650,7 @@ const _SPEED_BOUNDS: (f64, f64, f64) = (SPEED_MIN, SPEED_MAX, SPEED_STEP);
 mod tests {
     use super::*;
     use std::fs;
+    use std::time::Duration;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_store() -> (PlaylistStore, i64, std::path::PathBuf) {
@@ -655,6 +673,19 @@ mod tests {
         }
         store.add_tracks(pid, &paths).unwrap();
         (store, pid, dir)
+    }
+
+    async fn rodio_contract_player() -> (PlayerService, i64, Vec<i64>, std::path::PathBuf) {
+        let (store, playlist_id, dir) = temp_store();
+        let item_ids = store.list_item_ids(playlist_id).unwrap();
+        let mut player = PlayerService::new(store, BackendKind::Rodio);
+        // Natural-end playlist behavior is backend-neutral. Use the fake
+        // transport under a Rodio-labelled service so this contract remains
+        // deterministic and does not require a CI audio device.
+        player.engine = Engine::Fake(FakePlaybackBackend::new());
+        player.default_duration_ms = 15;
+        player.start().await.unwrap();
+        (player, playlist_id, item_ids, dir)
     }
 
     #[tokio::test]
@@ -690,6 +721,69 @@ mod tests {
             .track_path
             .as_deref()
             .is_some_and(|path| path.ends_with("t1.mp3")));
+        player.shutdown().await.unwrap();
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn rodio_contract_natural_end_honors_repeat_modes_exactly_once() {
+        let (mut player, playlist_id, ids, dir) = rodio_contract_player().await;
+
+        player.set_repeat(RepeatMode::Off).await;
+        player.play_item(playlist_id, ids[0]).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        player.poll_position().await;
+        assert_eq!(player.snapshot().await.item_id, Some(ids[1]));
+        player.poll_position().await;
+        assert_eq!(
+            player.snapshot().await.item_id,
+            Some(ids[1]),
+            "one natural end must not skip two tracks"
+        );
+
+        player.play_item(playlist_id, ids[2]).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        player.poll_position().await;
+        let stopped = player.snapshot().await;
+        assert_eq!(stopped.item_id, Some(ids[2]));
+        assert_eq!(stopped.status, BackendStatus::Stopped);
+        assert_eq!(stopped.position_ms, stopped.duration_ms);
+
+        player.set_repeat(RepeatMode::All).await;
+        player.play_item(playlist_id, ids[2]).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        player.poll_position().await;
+        assert_eq!(player.snapshot().await.item_id, Some(ids[0]));
+
+        player.set_repeat(RepeatMode::One).await;
+        player.play_item(playlist_id, ids[1]).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        player.poll_position().await;
+        let repeated = player.snapshot().await;
+        assert_eq!(repeated.item_id, Some(ids[1]));
+        assert_eq!(repeated.status, BackendStatus::Playing);
+        assert_eq!(repeated.backend, BackendKind::Rodio);
+
+        player.shutdown().await.unwrap();
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn rodio_contract_next_previous_and_shuffle_keep_valid_items() {
+        let (mut player, playlist_id, ids, dir) = rodio_contract_player().await;
+        player.play_item(playlist_id, ids[1]).await.unwrap();
+
+        player.next().await.unwrap();
+        assert_eq!(player.snapshot().await.item_id, Some(ids[2]));
+        player.previous().await.unwrap();
+        assert_eq!(player.snapshot().await.item_id, Some(ids[1]));
+
+        player.set_shuffle(true).await;
+        player.next().await.unwrap();
+        let shuffled = player.snapshot().await.item_id.unwrap();
+        assert_ne!(shuffled, ids[1]);
+        assert!(ids.contains(&shuffled));
+
         player.shutdown().await.unwrap();
         let _ = fs::remove_dir_all(dir);
     }

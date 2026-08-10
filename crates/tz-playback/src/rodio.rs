@@ -340,4 +340,39 @@ mod tests {
         backend.shutdown().await.unwrap();
         fs::remove_file(path).unwrap();
     }
+
+    #[tokio::test]
+    async fn decode_failure_does_not_poison_the_next_track_when_device_exists() {
+        let valid_path = silent_wav(200);
+        let unsupported_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("tone-opus.ogg");
+        let mut backend = RodioPlaybackBackend::new();
+        match backend.start().await {
+            Ok(()) => {}
+            Err(PlaybackError::RodioUnavailable(_)) => {
+                fs::remove_file(valid_path).unwrap();
+                return;
+            }
+            Err(error) => panic!("unexpected Rodio startup result: {error}"),
+        }
+
+        let error = backend
+            .play(1, &unsupported_path, 0, Some(1_000))
+            .await
+            .expect_err("Ogg Opus should be rejected by the selected decoder set");
+        assert!(error.to_string().contains("unsupported or corrupt"));
+        assert_eq!(backend.get_state().await.unwrap(), BackendStatus::Error);
+
+        backend
+            .play(2, &valid_path, 0, Some(200))
+            .await
+            .expect("a supported track must remain playable after a decode error");
+        assert_eq!(backend.get_state().await.unwrap(), BackendStatus::Playing);
+
+        backend.stop().await.unwrap();
+        backend.shutdown().await.unwrap();
+        fs::remove_file(valid_path).unwrap();
+    }
 }

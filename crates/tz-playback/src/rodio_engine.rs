@@ -439,4 +439,76 @@ mod tests {
         source.try_seek(Duration::from_millis(750)).unwrap();
         assert_eq!(handle.position_ms(), 750);
     }
+
+    #[test]
+    fn timeline_stays_in_source_time_at_all_supported_rates() {
+        use rodio::buffer::SamplesBuffer;
+        use rodio::nz;
+        use rodio::Player;
+
+        const SAMPLE_RATE: u32 = 48_000;
+        const OUTPUT_WINDOW_MS: u64 = 250;
+        let output_samples = SAMPLE_RATE as usize * OUTPUT_WINDOW_MS as usize / 1_000;
+
+        for rate in [0.5_f32, 1.0, 2.0, 4.0] {
+            let samples = vec![0.25; SAMPLE_RATE as usize * 2];
+            let source = SamplesBuffer::new(nz!(1), nz!(48_000), samples);
+            let (source, handle) = TimelineSource::new(source, Duration::ZERO);
+            let (mixer, mut output) = rodio::mixer::mixer(nz!(1), nz!(48_000));
+            let player = Player::connect_new(&mixer);
+            player.set_speed(rate);
+            player.append(source);
+
+            for _ in 0..output_samples {
+                assert!(output.next().is_some());
+            }
+
+            let expected_ms = (OUTPUT_WINDOW_MS as f32 * rate) as u64;
+            let actual_ms = handle.position_ms();
+            assert!(
+                actual_ms.abs_diff(expected_ms) <= 50,
+                "{rate}x reported {actual_ms} ms of source time; expected about {expected_ms} ms"
+            );
+        }
+    }
+
+    #[test]
+    fn timeline_remains_anchored_across_multiple_rate_changes() {
+        use rodio::buffer::SamplesBuffer;
+        use rodio::nz;
+        use rodio::Player;
+
+        const SAMPLE_RATE: usize = 48_000;
+        const WARMUP_MS: usize = 2_000;
+        const MEASURE_MS: usize = 250;
+        let samples = vec![0.25; SAMPLE_RATE * 30];
+        let source = SamplesBuffer::new(nz!(1), nz!(48_000), samples);
+        let (source, handle) = TimelineSource::new(source, Duration::ZERO);
+        let (mixer, mut output) = rodio::mixer::mixer(nz!(1), nz!(48_000));
+        let player = Player::connect_new(&mixer);
+        player.append(source);
+
+        let mut prior_position_ms = 0_u64;
+        for rate in [0.5_f32, 1.0, 2.0, 4.0] {
+            player.set_speed(rate);
+            // Rodio's output-rate converter re-samples in bounded spans. Drive
+            // past the longest span before measuring a newly selected rate.
+            for _ in 0..(SAMPLE_RATE * WARMUP_MS / 1_000) {
+                assert!(output.next().is_some());
+            }
+            let before_ms = handle.position_ms();
+            assert!(before_ms > prior_position_ms, "source time must not reset");
+            for _ in 0..(SAMPLE_RATE * MEASURE_MS / 1_000) {
+                assert!(output.next().is_some());
+            }
+            let after_ms = handle.position_ms();
+            let actual_delta_ms = after_ms.saturating_sub(before_ms);
+            let expected_delta_ms = (MEASURE_MS as f32 * rate) as u64;
+            assert!(
+                actual_delta_ms.abs_diff(expected_delta_ms) <= 50,
+                "after switching to {rate}x, source time advanced {actual_delta_ms} ms; expected about {expected_delta_ms} ms"
+            );
+            prior_position_ms = after_ms;
+        }
+    }
 }
