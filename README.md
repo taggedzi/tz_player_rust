@@ -14,13 +14,17 @@ default and an evaluated opt-in Rodio backend retained as experimental. See
 |------|------------|
 | **Playback (default)** | **VLC 3.x / libVLC** (dynamic load from a complete VLC install; other majors fail closed) |
 | **Playback (experimental)** | **Rodio 0.22 + Symphonia + system audio** (`--backend rodio`; no VLC/FFmpeg runtime) |
-| **Analysis / visualizers** | **FFmpeg** (optional) + native WAV |
+| **Analysis / visualizers** | Rodio live stereo levels when selected; cached envelope/spectrum/beat/waveform from optional **FFmpeg** + native WAV |
 | **Tests / fallback** | Fake playback backend |
 
 FFmpeg is **not** used for listening. Rodio supports the common MP3, FLAC,
 WAV, Vorbis, AAC/M4A, ALAC, AIFF, CAF, and Matroska families, while VLC remains
 the broader-compatibility default. See the backend capability table in
 [`docs/usage.md`](docs/usage.md).
+
+Rodio taps its decoded PCM stream for live stereo levels, so level-reactive
+visualizers respond without waiting for offline analysis. Spectrum, beat, and
+waveform detail still use the bounded backend-neutral analysis cache.
 
 VLC and FFmpeg execute trusted external/native code; Rodio/Symphonia parses
 media in the player process. Keep every selected component patched and review

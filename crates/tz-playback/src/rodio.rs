@@ -7,11 +7,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
-use crate::backend::{EventHandler, PlaybackBackend, PlaybackError};
+use crate::backend::{EventHandler, PlaybackBackend, PlaybackError, PlaybackLevelProvider};
 use crate::events::{BackendEvent, MediaChanged, PositionUpdated, StateChanged};
 use crate::rodio_engine::{RodioSnapshot, RodioTransport};
 use crate::rodio_worker::{RodioCmd, RodioOutputInfo, RodioWorker, RodioWorkerEventKind};
-use crate::BackendStatus;
+use crate::{BackendStatus, LevelSample};
 
 struct RodioInner {
     started: bool,
@@ -58,6 +58,9 @@ impl RodioPlaybackBackend {
             match event.kind {
                 RodioWorkerEventKind::State(status) => {
                     inner.snapshot.status = status;
+                    if status != BackendStatus::Playing {
+                        inner.snapshot.level_sample = None;
+                    }
                     output.push(BackendEvent::StateChanged(StateChanged { status }));
                 }
                 RodioWorkerEventKind::Media { duration_ms } => {
@@ -144,6 +147,16 @@ impl Default for RodioPlaybackBackend {
     }
 }
 
+#[async_trait]
+impl PlaybackLevelProvider for RodioPlaybackBackend {
+    async fn get_level_sample(&self) -> Option<LevelSample> {
+        let inner = self.inner.lock().await;
+        (inner.snapshot.status == BackendStatus::Playing)
+            .then_some(inner.snapshot.level_sample)
+            .flatten()
+    }
+}
+
 /// Silently open and close the default output device for doctor/smoke tools.
 pub fn probe_rodio_output() -> Result<RodioOutputInfo, String> {
     let worker = RodioWorker::spawn()?;
@@ -223,7 +236,9 @@ impl PlaybackBackend for RodioPlaybackBackend {
 
     async fn seek_ms(&mut self, position_ms: u64) -> Result<(), PlaybackError> {
         self.submit(move |reply| RodioCmd::SeekMs { position_ms, reply })
-            .await
+            .await?;
+        self.inner.lock().await.snapshot.level_sample = None;
+        Ok(())
     }
 
     async fn set_volume(&mut self, volume: u8) -> Result<(), PlaybackError> {
@@ -300,6 +315,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn live_level_provider_only_reports_playing_samples() {
+        let backend = RodioPlaybackBackend::new();
+        {
+            let mut inner = backend.inner.lock().await;
+            inner.snapshot.status = BackendStatus::Playing;
+            inner.snapshot.level_sample = Some(LevelSample {
+                left: 0.2,
+                right: 0.6,
+            });
+        }
+        assert_eq!(
+            backend.get_level_sample().await,
+            Some(LevelSample {
+                left: 0.2,
+                right: 0.6
+            })
+        );
+
+        backend.inner.lock().await.snapshot.status = BackendStatus::Paused;
+        assert_eq!(backend.get_level_sample().await, None);
+    }
+
+    #[tokio::test]
     async fn startup_is_clean_or_reports_device_unavailable() {
         if !output_device_tests_enabled() {
             return;
@@ -349,6 +387,50 @@ mod tests {
 
         backend.shutdown().await.unwrap();
         fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn tone_reaches_live_level_provider_through_output_when_device_exists() {
+        if !output_device_tests_enabled() {
+            return;
+        }
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("tone.wav");
+        let mut backend = RodioPlaybackBackend::new();
+        match backend.start().await {
+            Ok(()) => {}
+            Err(PlaybackError::RodioUnavailable(_)) => return,
+            Err(error) => panic!("unexpected Rodio startup result: {error}"),
+        }
+        // Metering is intentionally pre-volume, so verification stays silent.
+        backend.set_volume(0).await.unwrap();
+        backend.play(43, &path, 0, None).await.unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let sample = loop {
+            let _ = backend.get_transport_snapshot().await.unwrap();
+            if let Some(sample) = backend
+                .get_level_sample()
+                .await
+                .filter(|sample| sample.left > 0.05 || sample.right > 0.05)
+            {
+                break sample;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Rodio output produced no live visualization level"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert!(sample.left > 0.05);
+        assert!(sample.right > 0.05);
+
+        backend.stop().await.unwrap();
+        let _ = backend.get_transport_snapshot().await.unwrap();
+        assert_eq!(backend.get_level_sample().await, None);
+        backend.shutdown().await.unwrap();
     }
 
     #[tokio::test]

@@ -8,8 +8,9 @@ use tokio::sync::Mutex;
 use tz_control::TransportSnapshot;
 use tz_db::{PlaylistRow, PlaylistStore};
 use tz_playback::{
-    BackendKind, BackendStatus, FakePlaybackBackend, PlaybackBackend, PlaybackError,
-    RodioPlaybackBackend, VlcPlaybackBackend,
+    BackendKind, BackendStatus, FakePlaybackBackend, LevelSample as PlaybackLevelSample,
+    PlaybackBackend, PlaybackError, PlaybackLevelProvider, RodioPlaybackBackend,
+    VlcPlaybackBackend,
 };
 
 use crate::{clamp_speed, SPEED_MAX, SPEED_MIN, SPEED_STEP};
@@ -105,6 +106,13 @@ impl Engine {
             Self::Vlc(b) => b,
         }
     }
+
+    async fn level_sample(&self) -> Option<PlaybackLevelSample> {
+        match self {
+            Self::Rodio(backend) => backend.get_level_sample().await,
+            Self::Fake(_) | Self::Vlc(_) => None,
+        }
+    }
 }
 
 /// Owns playlist-aware transport and backend lifecycle.
@@ -163,6 +171,12 @@ impl PlayerService {
 
     pub async fn snapshot(&self) -> PlayerState {
         self.state.lock().await.clone()
+    }
+
+    /// Return a backend-native live level when the selected engine exposes
+    /// one. Higher-order spectrum/beat/waveform data remains in `tz-analysis`.
+    pub async fn live_level_sample(&self) -> Option<PlaybackLevelSample> {
+        self.engine.level_sample().await
     }
 
     /// Restore the selected track's display context without starting playback.

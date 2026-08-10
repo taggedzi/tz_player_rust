@@ -9,7 +9,7 @@ use tz_control::{Command, ControlError, TransportSnapshot};
 use tz_db::{DraftRow, MoveDirection, PlaylistRow, PlaylistSort, PlaylistStore};
 use tz_playback::{BackendKind, BackendStatus};
 
-use crate::levels::LevelService;
+use crate::levels::{LevelSample, LevelService, LevelSource};
 use crate::metadata::{read_track_meta, refresh_playlist_metadata};
 use crate::paths::AppPaths;
 use crate::player::{PlayerError, PlayerService, RepeatMode};
@@ -23,6 +23,21 @@ fn real_backend_start_attempts(backend: BackendKind) -> usize {
     match backend {
         BackendKind::Vlc => VLC_START_ATTEMPTS,
         BackendKind::Rodio | BackendKind::Fake => 1,
+    }
+}
+
+fn resolve_visualizer_levels(
+    cached: LevelSample,
+    live: Option<tz_playback::LevelSample>,
+    status: BackendStatus,
+) -> LevelSample {
+    match (status, live) {
+        (BackendStatus::Playing, Some(live)) => LevelSample {
+            left: live.left,
+            right: live.right,
+            source: LevelSource::Live,
+        },
+        _ => cached,
     }
 }
 
@@ -460,9 +475,14 @@ impl AppRuntime {
         let snap = self.player.snapshot().await;
         if let Some(path) = snap.track_path.clone() {
             let p = PathBuf::from(&path);
-            let sample = self
+            let mut sample = self
                 .levels
                 .sample_all(&p, snap.position_ms, snap.status.as_str());
+            sample.levels = resolve_visualizer_levels(
+                sample.levels,
+                self.player.live_level_sample().await,
+                snap.status,
+            );
             self.last_level = Some((
                 sample.levels.left,
                 sample.levels.right,
@@ -1814,6 +1834,29 @@ mod tests {
         assert_eq!(real_backend_start_attempts(BackendKind::Vlc), 3);
         assert_eq!(real_backend_start_attempts(BackendKind::Rodio), 1);
         assert_eq!(real_backend_start_attempts(BackendKind::Fake), 1);
+    }
+
+    #[test]
+    fn playing_visualizers_prefer_live_backend_levels() {
+        let cached = LevelSample {
+            left: 0.1,
+            right: 0.2,
+            source: LevelSource::Envelope,
+        };
+        let live = tz_playback::LevelSample {
+            left: 0.4,
+            right: 0.8,
+        };
+
+        let resolved = resolve_visualizer_levels(cached, Some(live), BackendStatus::Playing);
+        assert_eq!(resolved.left, 0.4);
+        assert_eq!(resolved.right, 0.8);
+        assert_eq!(resolved.source.as_str(), "live");
+
+        let paused = resolve_visualizer_levels(cached, Some(live), BackendStatus::Paused);
+        assert_eq!(paused.left, cached.left);
+        assert_eq!(paused.right, cached.right);
+        assert_eq!(paused.source.as_str(), "envelope");
     }
 
     #[test]

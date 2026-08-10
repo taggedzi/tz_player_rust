@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use rodio::{Decoder, Source};
 
-use crate::{BackendStatus, PlaybackError};
+use crate::{BackendStatus, LevelSample, PlaybackError};
 
 pub(crate) type FileDecoder = Decoder<BufReader<File>>;
 
@@ -22,6 +22,7 @@ pub(crate) struct DecodedFile {
 #[derive(Debug, Clone)]
 pub(crate) struct TimelineHandle {
     sample_position: Arc<AtomicU64>,
+    level_peaks: Arc<AtomicU64>,
     channels: u16,
     sample_rate: u32,
 }
@@ -33,6 +34,7 @@ impl TimelineHandle {
         let sample_position = duration_to_samples(start, channels, sample_rate);
         Self {
             sample_position: Arc::new(AtomicU64::new(sample_position)),
+            level_peaks: Arc::new(AtomicU64::new(0)),
             channels,
             sample_rate,
         }
@@ -46,6 +48,19 @@ impl TimelineHandle {
     fn store(&self, samples: u64) {
         self.sample_position.store(samples, Ordering::Relaxed);
     }
+
+    pub(crate) fn level_sample(&self) -> LevelSample {
+        let packed = self.level_peaks.load(Ordering::Relaxed);
+        LevelSample {
+            left: f32::from_bits(packed as u32),
+            right: f32::from_bits((packed >> 32) as u32),
+        }
+    }
+
+    fn store_level_sample(&self, left: f32, right: f32) {
+        let packed = u64::from(left.to_bits()) | (u64::from(right.to_bits()) << 32);
+        self.level_peaks.store(packed, Ordering::Relaxed);
+    }
 }
 
 /// Track original-source samples before Rodio applies its variable-rate filter.
@@ -58,6 +73,10 @@ pub(crate) struct TimelineSource<S> {
     handle: TimelineHandle,
     sample_position: u64,
     samples_since_publish: u16,
+    peak_left: f32,
+    peak_right: f32,
+    level_frames: u32,
+    level_window_frames: u32,
 }
 
 impl<S: Source> TimelineSource<S> {
@@ -70,6 +89,13 @@ impl<S: Source> TimelineSource<S> {
                 handle: handle.clone(),
                 sample_position,
                 samples_since_publish: 0,
+                peak_left: 0.0,
+                peak_right: 0.0,
+                level_frames: 0,
+                // A 50 ms peak window follows the output callback closely
+                // enough for the 10-60 FPS TUI without synchronizing on every
+                // decoded sample.
+                level_window_frames: (handle.sample_rate / 20).max(1),
             },
             handle,
         )
@@ -79,6 +105,38 @@ impl<S: Source> TimelineSource<S> {
         self.handle.store(self.sample_position);
         self.samples_since_publish = 0;
     }
+
+    fn observe_level(&mut self, sample: f32) {
+        let channel = (self.sample_position % u64::from(self.handle.channels)) as u16;
+        let magnitude = if sample.is_finite() {
+            sample.abs().min(1.0)
+        } else {
+            0.0
+        };
+        if self.handle.channels == 1 {
+            self.peak_left = self.peak_left.max(magnitude);
+            self.peak_right = self.peak_right.max(magnitude);
+        } else if channel == 0 {
+            self.peak_left = self.peak_left.max(magnitude);
+        } else if channel == 1 {
+            self.peak_right = self.peak_right.max(magnitude);
+        }
+
+        if channel + 1 == self.handle.channels {
+            self.level_frames = self.level_frames.saturating_add(1);
+            if self.level_frames >= self.level_window_frames {
+                self.publish_levels();
+            }
+        }
+    }
+
+    fn publish_levels(&mut self) {
+        self.handle
+            .store_level_sample(self.peak_left, self.peak_right);
+        self.peak_left = 0.0;
+        self.peak_right = 0.0;
+        self.level_frames = 0;
+    }
 }
 
 impl<S: Source> Iterator for TimelineSource<S> {
@@ -86,7 +144,8 @@ impl<S: Source> Iterator for TimelineSource<S> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let sample = self.inner.next();
-        if sample.is_some() {
+        if let Some(value) = sample {
+            self.observe_level(value);
             self.sample_position = self.sample_position.saturating_add(1);
             self.samples_since_publish = self.samples_since_publish.saturating_add(1);
             if self.samples_since_publish >= 256 {
@@ -94,6 +153,7 @@ impl<S: Source> Iterator for TimelineSource<S> {
             }
         } else {
             self.publish();
+            self.publish_levels();
         }
         sample
     }
@@ -125,6 +185,10 @@ impl<S: Source> Source for TimelineSource<S> {
         self.sample_position =
             duration_to_samples(position, self.handle.channels, self.handle.sample_rate);
         self.publish();
+        self.peak_left = 0.0;
+        self.peak_right = 0.0;
+        self.level_frames = 0;
+        self.handle.store_level_sample(0.0, 0.0);
         Ok(())
     }
 }
@@ -132,6 +196,7 @@ impl<S: Source> Source for TimelineSource<S> {
 impl<S> Drop for TimelineSource<S> {
     fn drop(&mut self) {
         self.handle.store(self.sample_position);
+        self.handle.store_level_sample(0.0, 0.0);
     }
 }
 
@@ -170,6 +235,7 @@ pub(crate) struct RodioSnapshot {
     pub(crate) duration_ms: u64,
     pub(crate) volume: u8,
     pub(crate) speed: f64,
+    pub(crate) level_sample: Option<LevelSample>,
     pub(crate) error: Option<String>,
 }
 
@@ -193,6 +259,7 @@ impl Default for RodioTransport {
                 duration_ms: 0,
                 volume: 100,
                 speed: 1.0,
+                level_sample: None,
                 error: None,
             },
             natural_end_latched: false,
@@ -215,6 +282,7 @@ impl RodioTransport {
         self.snapshot.status = BackendStatus::Loading;
         self.snapshot.position_ms = start_ms;
         self.snapshot.duration_ms = fallback_duration_ms.unwrap_or(0);
+        self.snapshot.level_sample = None;
         self.snapshot.error = None;
         self.natural_end_latched = false;
     }
@@ -236,12 +304,16 @@ impl RodioTransport {
                 ))
             }
         };
+        if self.snapshot.status == BackendStatus::Paused {
+            self.snapshot.level_sample = None;
+        }
         Ok(self.snapshot.status)
     }
 
     pub(crate) fn stop(&mut self) {
         self.snapshot.status = BackendStatus::Stopped;
         self.snapshot.position_ms = 0;
+        self.snapshot.level_sample = None;
         self.natural_end_latched = true;
     }
 
@@ -252,6 +324,7 @@ impl RodioTransport {
             requested_ms
         };
         self.snapshot.position_ms = position_ms;
+        self.snapshot.level_sample = None;
         position_ms
     }
 
@@ -261,6 +334,11 @@ impl RodioTransport {
 
     pub(crate) fn set_speed(&mut self, speed: f64) {
         self.snapshot.speed = speed;
+    }
+
+    pub(crate) fn observe_level_sample(&mut self, sample: LevelSample) {
+        self.snapshot.level_sample =
+            (self.snapshot.status == BackendStatus::Playing).then_some(sample);
     }
 
     pub(crate) fn observe_position(&mut self, source_position_ms: u64) {
@@ -287,6 +365,7 @@ impl RodioTransport {
             if self.snapshot.duration_ms > 0 {
                 self.snapshot.position_ms = self.snapshot.duration_ms;
             }
+            self.snapshot.level_sample = None;
             true
         } else {
             false
@@ -296,6 +375,7 @@ impl RodioTransport {
     pub(crate) fn fail(&mut self, message: impl Into<String>) {
         let message = message.into();
         self.snapshot.status = BackendStatus::Error;
+        self.snapshot.level_sample = None;
         self.snapshot.error = Some(message);
         self.natural_end_latched = true;
     }
@@ -377,11 +457,29 @@ mod tests {
         transport.begin_load(7, 250, Some(2_000));
         transport.loaded(Some(1_500));
         transport.observe_position(400);
+        transport.observe_level_sample(LevelSample {
+            left: 0.25,
+            right: 0.75,
+        });
         assert_eq!(transport.snapshot().position_ms, 400);
+        assert_eq!(
+            transport.snapshot().level_sample,
+            Some(LevelSample {
+                left: 0.25,
+                right: 0.75
+            })
+        );
         assert_eq!(transport.toggle_pause().unwrap(), BackendStatus::Paused);
+        assert_eq!(transport.snapshot().level_sample, None);
         transport.observe_position(450);
         assert_eq!(transport.snapshot().position_ms, 450);
+        assert_eq!(transport.toggle_pause().unwrap(), BackendStatus::Playing);
+        transport.observe_level_sample(LevelSample {
+            left: 0.5,
+            right: 0.5,
+        });
         assert_eq!(transport.seek_accepted(9_000), 1_500);
+        assert_eq!(transport.snapshot().level_sample, None);
         transport.set_volume(250);
         transport.set_speed(2.0);
 
@@ -438,6 +536,35 @@ mod tests {
 
         source.try_seek(Duration::from_millis(750)).unwrap();
         assert_eq!(handle.position_ms(), 750);
+        assert_eq!(
+            handle.level_sample(),
+            LevelSample {
+                left: 0.0,
+                right: 0.0
+            }
+        );
+    }
+
+    #[test]
+    fn timeline_publishes_stereo_peaks_without_audio_hardware() {
+        use rodio::buffer::SamplesBuffer;
+        use rodio::nz;
+
+        let samples: Vec<f32> = (0..50).flat_map(|_| [0.25, -0.75]).collect();
+        let source = SamplesBuffer::new(nz!(2), nz!(1_000), samples);
+        let (mut source, handle) = TimelineSource::new(source, Duration::ZERO);
+
+        for _ in 0..100 {
+            assert!(source.next().is_some());
+        }
+
+        assert_eq!(
+            handle.level_sample(),
+            LevelSample {
+                left: 0.25,
+                right: 0.75
+            }
+        );
     }
 
     #[test]

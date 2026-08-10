@@ -42,6 +42,7 @@ impl Default for CacheLimits {
 /// Source of the current level sample.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LevelSource {
+    Live,
     Envelope,
     Fallback,
     Missing,
@@ -50,6 +51,7 @@ pub enum LevelSource {
 impl LevelSource {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Live => "live",
             Self::Envelope => "envelope",
             Self::Fallback => "fallback",
             Self::Missing => "missing",

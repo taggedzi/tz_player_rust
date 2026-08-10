@@ -89,11 +89,22 @@ VLC compatibility cases rather than Rodio support claims.
 | Repeat One / All | Replays one / wraps all | Pass |
 | Shuffle / Next / Previous | Remains within valid non-current/adjacent items as applicable | Pass |
 | Core integration | Real muted Rodio output advanced exactly one playlist item | Pass |
+| Live visualizer levels | Hardware-independent PCM tap plus core preference regression | Pass |
 | Unsupported track recovery | Error state cleared by the next supported play | Pass |
 
 The evaluation found and fixed a backend-neutral Repeat Off defect: the final
 item previously wrapped to the first and could leave UI state marked Playing.
 The corrected logic and regression tests apply to VLC, Rodio, and Fake.
+
+### Follow-up: visualization feed
+
+The initial backend reported transport timing but did not implement the
+existing optional live-level provider. Rodio now meters the same decoded PCM
+source sent to its player in 50 ms stereo peak windows and publishes the latest
+pair through a lock-free atomic value. Core prefers that live pair while Rodio
+is playing and retains the existing analysis cache for spectrum, beat, and
+waveform inputs. Pause, seek, explicit stop, natural end, and errors clear the
+live sample so stale energy cannot animate the TUI.
 
 ## Platform and setup comparison
 

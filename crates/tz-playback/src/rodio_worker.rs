@@ -397,6 +397,7 @@ impl WorkerEngine {
         if let Some(timeline) = &self.timeline {
             let position_ms = timeline.position_ms();
             self.transport.observe_position(position_ms);
+            self.transport.observe_level_sample(timeline.level_sample());
             if position_ms != self.last_event_position_ms {
                 self.last_event_position_ms = position_ms;
                 let _ = events.send(RodioWorkerEvent {

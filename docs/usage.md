@@ -16,7 +16,9 @@ tz-player doctor
   rodio`. Rodio, Symphonia, and CPAL are compiled into the application; no VLC
   or FFmpeg runtime is required. Linux source builds need the platform audio
   development files (for example, `libasound2-dev` on Ubuntu).
-- **FFmpeg** — optional; improves analysis for spectrum / beat / waveform visualizers.
+- **FFmpeg** — optional; supplies cached spectrum / beat / waveform analysis
+  for non-WAV files. Rodio supplies live stereo levels directly to reactive
+  visualizers when it is the selected playback backend.
 
 Install both only through a trusted operating-system package manager or another
 verified distribution channel. FFmpeg is the first `ffmpeg` executable found
@@ -47,6 +49,12 @@ backend, and preserves the requested preference for the next run.
 Rodio's speed control changes pitch with rate. VLC behavior depends on its
 audio output pipeline. Pitch-preserving time stretching is not currently part
 of the playback contract.
+
+During Rodio playback, decoded PCM is metered in lock-free 50 ms stereo peak
+windows before volume/output processing. This live signal drives level-reactive
+visualizers and is cleared on pause, seek, stop, natural end, or error. Cached
+spectrum, beat, and waveform inputs remain backend-neutral and continue to use
+the bounded analysis pipeline described below.
 
 ## Common commands
 
