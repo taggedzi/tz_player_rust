@@ -3,7 +3,7 @@
 //! Loads `libvlc` dynamically from a normal VLC install and drives the player
 //! on a dedicated worker thread (same model as the Python backend).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -317,11 +317,11 @@ impl PlaybackBackend for VlcPlaybackBackend {
     async fn play(
         &mut self,
         _item_id: i64,
-        track_path: &str,
+        track_path: &Path,
         start_ms: u64,
         duration_ms: Option<u64>,
     ) -> Result<(), PlaybackError> {
-        let path = track_path.to_string();
+        let path = track_path.to_string_lossy().into_owned();
         self.submit(move |reply| EngineCmd::Play {
             path,
             start_ms,

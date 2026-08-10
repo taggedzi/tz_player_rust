@@ -65,10 +65,7 @@ async fn run(startup_only: bool) {
     println!("wav={}", wav.display());
 
     backend.set_volume(40).await.expect("vol");
-    backend
-        .play(1, wav.to_str().unwrap(), 0, Some(1500))
-        .await
-        .expect("play");
+    backend.play(1, &wav, 0, Some(1500)).await.expect("play");
     println!("playing...");
     for _ in 0..8 {
         tokio::time::sleep(Duration::from_millis(200)).await;

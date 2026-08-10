@@ -379,11 +379,10 @@ impl PlayerService {
             s.duration_ms = duration_ms;
         }
 
-        let path = row.path.to_string_lossy().to_string();
         match self
             .engine
             .as_backend_mut()
-            .play(item_id, &path, 0, Some(duration_ms))
+            .play(item_id, &row.path, 0, Some(duration_ms))
             .await
         {
             Ok(()) => {

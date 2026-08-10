@@ -2,6 +2,7 @@
 
 use async_trait::async_trait;
 use std::future::Future;
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -31,7 +32,7 @@ pub trait PlaybackBackend: Send + Sync {
     async fn play(
         &mut self,
         item_id: i64,
-        track_path: &str,
+        track_path: &Path,
         start_ms: u64,
         duration_ms: Option<u64>,
     ) -> Result<(), PlaybackError>;
@@ -65,6 +66,9 @@ pub enum PlaybackError {
 
     #[error("VLC/libVLC unavailable: {0}")]
     VlcUnavailable(String),
+
+    #[error("Rodio unavailable: {0}")]
+    RodioUnavailable(String),
 }
 
 impl PlaybackError {

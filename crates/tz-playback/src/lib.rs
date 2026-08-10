@@ -1,13 +1,14 @@
 //! Playback backends for tz-player.
 //!
-//! **Listen path only.** Real audio output goes through VLC/libVLC.
+//! **Listen path only.** Real audio output goes through VLC/libVLC or Rodio.
 //! Offline analysis/decode for visualizers lives in `tz-analysis` (FFmpeg), not here.
 
 mod backend;
 mod events;
 mod fake;
-#[cfg(test)]
+mod rodio;
 mod rodio_engine;
+mod rodio_worker;
 mod status;
 mod vlc;
 mod vlc_engine;
@@ -18,6 +19,8 @@ pub use events::{
     BackendError, BackendEvent, LevelSample, MediaChanged, PositionUpdated, StateChanged,
 };
 pub use fake::FakePlaybackBackend;
+pub use rodio::{probe_rodio_output, RodioPlaybackBackend};
+pub use rodio_worker::RodioOutputInfo;
 pub use status::BackendStatus;
 pub use vlc::{configure_vlc_environment, discover_vlc, VlcDiscovery, VlcPlaybackBackend};
 

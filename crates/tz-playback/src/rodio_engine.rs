@@ -3,6 +3,8 @@
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use rodio::{Decoder, Source};
@@ -15,6 +17,129 @@ pub(crate) type FileDecoder = Decoder<BufReader<File>>;
 pub(crate) struct DecodedFile {
     pub(crate) decoder: FileDecoder,
     pub(crate) duration_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct TimelineHandle {
+    sample_position: Arc<AtomicU64>,
+    channels: u16,
+    sample_rate: u32,
+}
+
+impl TimelineHandle {
+    fn new<S: Source>(source: &S, start: Duration) -> Self {
+        let channels = source.channels().get();
+        let sample_rate = source.sample_rate().get();
+        let sample_position = duration_to_samples(start, channels, sample_rate);
+        Self {
+            sample_position: Arc::new(AtomicU64::new(sample_position)),
+            channels,
+            sample_rate,
+        }
+    }
+
+    pub(crate) fn position_ms(&self) -> u64 {
+        let frames = self.sample_position.load(Ordering::Relaxed) / u64::from(self.channels);
+        frames.saturating_mul(1_000) / u64::from(self.sample_rate)
+    }
+
+    fn store(&self, samples: u64) {
+        self.sample_position.store(samples, Ordering::Relaxed);
+    }
+}
+
+/// Track original-source samples before Rodio applies its variable-rate filter.
+///
+/// Rodio's public player position is expressed in its speed-adjusted playback
+/// clock. Counting decoder samples instead keeps tz-player's public position in
+/// the original media timeline, including after multiple rate changes.
+pub(crate) struct TimelineSource<S> {
+    inner: S,
+    handle: TimelineHandle,
+    sample_position: u64,
+    samples_since_publish: u16,
+}
+
+impl<S: Source> TimelineSource<S> {
+    pub(crate) fn new(inner: S, start: Duration) -> (Self, TimelineHandle) {
+        let handle = TimelineHandle::new(&inner, start);
+        let sample_position = handle.sample_position.load(Ordering::Relaxed);
+        (
+            Self {
+                inner,
+                handle: handle.clone(),
+                sample_position,
+                samples_since_publish: 0,
+            },
+            handle,
+        )
+    }
+
+    fn publish(&mut self) {
+        self.handle.store(self.sample_position);
+        self.samples_since_publish = 0;
+    }
+}
+
+impl<S: Source> Iterator for TimelineSource<S> {
+    type Item = S::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let sample = self.inner.next();
+        if sample.is_some() {
+            self.sample_position = self.sample_position.saturating_add(1);
+            self.samples_since_publish = self.samples_since_publish.saturating_add(1);
+            if self.samples_since_publish >= 256 {
+                self.publish();
+            }
+        } else {
+            self.publish();
+        }
+        sample
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<S: Source> Source for TimelineSource<S> {
+    fn current_span_len(&self) -> Option<usize> {
+        self.inner.current_span_len()
+    }
+
+    fn channels(&self) -> rodio::ChannelCount {
+        self.inner.channels()
+    }
+
+    fn sample_rate(&self) -> rodio::SampleRate {
+        self.inner.sample_rate()
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        self.inner.total_duration()
+    }
+
+    fn try_seek(&mut self, position: Duration) -> Result<(), rodio::source::SeekError> {
+        self.inner.try_seek(position)?;
+        self.sample_position =
+            duration_to_samples(position, self.handle.channels, self.handle.sample_rate);
+        self.publish();
+        Ok(())
+    }
+}
+
+impl<S> Drop for TimelineSource<S> {
+    fn drop(&mut self) {
+        self.handle.store(self.sample_position);
+    }
+}
+
+fn duration_to_samples(duration: Duration, channels: u16, sample_rate: u32) -> u64 {
+    let frames = duration.as_nanos().saturating_mul(u128::from(sample_rate)) / 1_000_000_000;
+    frames
+        .saturating_mul(u128::from(channels))
+        .min(u128::from(u64::MAX)) as u64
 }
 
 /// Open a local file for streaming decode without requiring an output device.
@@ -292,5 +417,26 @@ mod tests {
 
         assert_eq!(transport.snapshot().error, None);
         assert!(transport.observe_empty());
+    }
+
+    #[test]
+    fn timeline_tracks_source_samples_and_seek() {
+        use rodio::buffer::SamplesBuffer;
+        use rodio::nz;
+
+        let samples = vec![0.25; 2_000];
+        let source = SamplesBuffer::new(nz!(2), nz!(1_000), samples);
+        let (mut source, handle) = TimelineSource::new(source, Duration::ZERO);
+
+        for _ in 0..1_000 {
+            assert!(source.next().is_some());
+        }
+        // The source publishes in bounded batches to avoid an atomic write per
+        // sample. At this deliberately tiny sample rate the maximum lag is
+        // visible; normal music rates keep it to a few milliseconds.
+        assert!((380..=500).contains(&handle.position_ms()));
+
+        source.try_seek(Duration::from_millis(750)).unwrap();
+        assert_eq!(handle.position_ms(), 750);
     }
 }

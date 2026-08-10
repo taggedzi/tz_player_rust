@@ -1,5 +1,6 @@
-//! Deterministic fake playback backend for tests and VLC-unavailable fallback.
+//! Deterministic fake playback backend for tests and real-backend fallback.
 
+use std::path::Path;
 use std::time::Instant;
 
 use async_trait::async_trait;
@@ -110,7 +111,7 @@ impl PlaybackBackend for FakePlaybackBackend {
     async fn play(
         &mut self,
         item_id: i64,
-        track_path: &str,
+        track_path: &Path,
         start_ms: u64,
         duration_ms: Option<u64>,
     ) -> Result<(), PlaybackError> {
@@ -120,7 +121,7 @@ impl PlaybackBackend for FakePlaybackBackend {
                 return Err(PlaybackError::NotStarted);
             }
             inner.item_id = Some(item_id);
-            inner.track_path = Some(track_path.to_string());
+            inner.track_path = Some(track_path.to_string_lossy().into_owned());
             inner.duration_ms = duration_ms.unwrap_or(180_000);
             inner.position_ms = start_ms.min(inner.duration_ms);
             inner.paused_at_ms = inner.position_ms;
@@ -256,7 +257,7 @@ mod tests {
         let mut backend = FakePlaybackBackend::new();
         backend.start().await.unwrap();
         backend
-            .play(1, "/tmp/track.flac", 0, Some(60_000))
+            .play(1, Path::new("/tmp/track.flac"), 0, Some(60_000))
             .await
             .unwrap();
         assert_eq!(backend.get_state().await.unwrap(), BackendStatus::Playing);
@@ -287,7 +288,10 @@ mod tests {
             })
         }));
         backend.start().await.unwrap();
-        backend.play(1, "a.mp3", 0, Some(10_000)).await.unwrap();
+        backend
+            .play(1, Path::new("a.mp3"), 0, Some(10_000))
+            .await
+            .unwrap();
         let got = events.lock().await.clone();
         assert!(got.iter().any(|e| e == "media"));
         assert!(got.iter().any(|e| e.starts_with("state:")));
