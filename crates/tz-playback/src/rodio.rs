@@ -375,4 +375,57 @@ mod tests {
         backend.shutdown().await.unwrap();
         fs::remove_file(valid_path).unwrap();
     }
+
+    #[tokio::test]
+    async fn muted_format_matrix_reaches_natural_end_when_device_exists() {
+        const FIXTURES: &[&str] = &[
+            "tone.wav",
+            "tone.mp3",
+            "tone.flac",
+            "tone.ogg",
+            "tone-aac.m4a",
+            "tone-alac.m4a",
+            "tone.aiff",
+            "tone.caf",
+            "tone.mka",
+        ];
+
+        let mut backend = RodioPlaybackBackend::new();
+        match backend.start().await {
+            Ok(()) => {}
+            Err(PlaybackError::RodioUnavailable(_)) => return,
+            Err(error) => panic!("unexpected Rodio startup result: {error}"),
+        }
+        backend.set_volume(0).await.unwrap();
+        backend.set_speed(4.0).await.unwrap();
+
+        for (index, name) in FIXTURES.iter().enumerate() {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests")
+                .join("fixtures")
+                .join(name);
+            backend
+                .play(index as i64 + 1, &path, 0, None)
+                .await
+                .unwrap_or_else(|error| panic!("{name} did not start: {error}"));
+
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let snapshot = loop {
+                let snapshot = backend.get_transport_snapshot().await.unwrap();
+                if snapshot.2 == BackendStatus::Stopped || Instant::now() >= deadline {
+                    break snapshot;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            };
+            assert_eq!(
+                snapshot.2,
+                BackendStatus::Stopped,
+                "{name} did not reach natural end: {snapshot:?}"
+            );
+            assert!(snapshot.1 > 0, "{name} did not report a duration");
+            assert_eq!(snapshot.0, snapshot.1, "{name} did not latch final time");
+        }
+
+        backend.shutdown().await.unwrap();
+    }
 }
