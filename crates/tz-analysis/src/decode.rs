@@ -282,7 +282,7 @@ where
     let mut sample_count = 0usize;
 
     for sample in samples {
-        if sample_count % 4096 == 0 && started.elapsed() >= timeout {
+        if sample_count.is_multiple_of(4096) && started.elapsed() >= timeout {
             return Err(AnalysisError::Timeout(
                 "native WAV decode exceeded its execution-time limit".into(),
             ));
@@ -309,7 +309,7 @@ where
         sample_count += 1;
     }
 
-    if sample_count % channels != 0 {
+    if !sample_count.is_multiple_of(channels) {
         return Err(AnalysisError::Decode("truncated WAV frame".into()));
     }
     if left.is_empty() {

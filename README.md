@@ -18,6 +18,8 @@ FFmpeg is **not** used for listening in v1.
 
 ## Quick start
 
+Requires Rust 1.88 or newer (the MSRV of Ratatui 0.30).
+
 ```powershell
 cargo build -p tz-player
 

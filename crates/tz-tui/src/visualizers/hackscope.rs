@@ -545,7 +545,7 @@ fn layer_own(canvas: &mut Canvas, w: usize, h: usize, t: f32, onset: bool, color
     // Victory cascade + "ROOT" stamp
     for y in 2..h.saturating_sub(1) {
         for x in 0..w {
-            if (x + y + (t as usize / 2)) % 7 == 0 {
+            if (x + y + (t as usize / 2)).is_multiple_of(7) {
                 canvas.set(
                     x as i32,
                     y as i32,

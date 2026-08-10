@@ -50,10 +50,11 @@ release-hardening phase.
   lookup because V4 construction/seeking differs. C states cross as integers
   and are checked before conversion; unsupported versions, unknown states, and
   V3 time units have regression tests.
-- [ ] **Remove the affected `lru 0.12.5` dependency.** Upgrade Ratatui or
-  otherwise move to `lru >= 0.16.3`, then rerun tests, Clippy, and
-  `cargo audit`. **Done when:** RUSTSEC-2026-0002 is absent from the lockfile
-  audit.
+- [x] **Remove the affected `lru 0.12.5` dependency.** Ratatui 0.30.2 and
+  Crossterm 0.29 replace it with `lru 0.18.2`; the explicit MSRV is now Rust
+  1.88. TUI/player tests pass and `cargo audit` no longer reports
+  RUSTSEC-2026-0002. The full strict Clippy gate is completed in the dedicated
+  checklist task below.
 - [ ] **Resolve the unmaintained `paste` dependency.** Upgrade Ratatui and Lofty
   where possible. If no compatible upgrade removes it, document a temporary
   advisory exception with an owner and expiration date. **Done when:** `paste`
