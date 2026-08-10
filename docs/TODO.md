@@ -68,11 +68,13 @@ release-hardening phase.
 
 ### Security Tier 3 — Supply-chain and operational controls
 
-- [ ] **Add dependency security policy to CI.** Add `cargo audit` and a
-  configured `deny.toml` covering advisories, approved licenses, registries,
-  and Git dependencies. Decide whether unmaintained advisories fail CI or
-  require time-bounded exceptions. Keep `Cargo.lock` committed. **Done when:**
-  vulnerable or disallowed dependencies block pull requests.
+- [x] **Add dependency security policy to CI.** CI runs pinned versions of
+  `cargo audit` and `cargo deny`; `deny.toml` rejects vulnerabilities, unsound
+  and unmaintained advisories, yanked crates, unapproved licenses, unknown
+  registries, and all unapproved Git dependencies. The single `paste`
+  unmaintained advisory is explicitly linked to its owned, time-bounded
+  exception. `Cargo.lock` remains committed, so vulnerable or disallowed
+  dependency changes block pull requests.
 - [ ] **Pin GitHub Actions by immutable commit SHA.** Pin checkout, Rust
   toolchain, and cache actions while retaining comments identifying their
   release tags, and establish a periodic update process. **Done when:** CI no

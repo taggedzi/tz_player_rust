@@ -1,5 +1,18 @@
 # Security policy
 
+## Dependency policy
+
+Pull requests run both `cargo audit` and
+`cargo deny --locked check advisories bans licenses sources` against the
+committed `Cargo.lock`. Known vulnerabilities, unsound advisories, yanked
+crates, unmaintained crates, unapproved licenses, unknown registries, and Git
+dependencies fail the policy unless they have an explicit exception in
+`deny.toml`.
+
+An exception in `deny.toml` is not sufficient on its own. It must have a
+matching entry below with an owner and expiration date. Review both files
+together whenever an exception is added, renewed, or removed.
+
 ## Temporary dependency exceptions
 
 Exceptions are a last resort. Each exception must name an owner, explain why
@@ -27,4 +40,3 @@ its expiration date.
 - **Exit criteria:** upgrade Lofty to a release that removes `paste`, replace
   Lofty, or vendor a reviewed minimal alternative. Do not release after the
   expiration date without recording a new review and a new deadline.
-
