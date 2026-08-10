@@ -12,6 +12,15 @@ tz-player doctor
   microseconds; tz-player rejects it until a complete VLC 4 backend exists.
 - **FFmpeg** — optional; improves analysis for spectrum / beat / waveform visualizers.
 
+Install both only through a trusted operating-system package manager or another
+verified distribution channel. FFmpeg is the first `ffmpeg` executable found
+on `PATH`, while LibVLC and its plugins are dynamically loaded into the player
+process. Do not shadow FFmpeg with a binary in a user-writable directory or set
+`VLC_PLUGIN_PATH` to an untrusted directory. Run `tz-player doctor` after
+installation or environment changes, and separately verify which `ffmpeg`
+executable is first on `PATH`. See [the security policy](SECURITY.md) for the
+complete runtime trust boundaries and resource limits.
+
 ## Common commands
 
 ```powershell

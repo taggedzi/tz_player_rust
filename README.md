@@ -16,6 +16,10 @@ Rust rewrite of [tz-player](https://github.com/taggedzi/tz-player) — a keyboar
 
 FFmpeg is **not** used for listening in v1.
 
+VLC and FFmpeg execute trusted external/native code: install them through a
+trusted package manager, keep them patched, and review
+[`docs/SECURITY.md`](docs/SECURITY.md) before processing untrusted media.
+
 ## Quick start
 
 Requires Rust 1.89 or newer (the highest MSRV among Ratatui and Lofty).
@@ -92,14 +96,18 @@ crates/
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo audit
+cargo deny --locked check advisories bans licenses sources
 ```
 
-CI: [`.github/workflows/ci.yml`](.github/workflows/ci.yml) (Windows + Ubuntu).
+CI: [`.github/workflows/ci.yml`](.github/workflows/ci.yml) (Windows, Ubuntu,
+macOS, and locked dependency policy).
 
 ## Docs
 
 - [`docs/usage.md`](docs/usage.md) — CLI + TUI guide  
 - [`docs/RELEASE.md`](docs/RELEASE.md) — release checklist  
+- [`docs/SECURITY.md`](docs/SECURITY.md) — trust boundaries + dependency policy
 - [`docs/SPEC.md`](docs/SPEC.md) — product scope  
 - [`docs/architecture.md`](docs/architecture.md) — crate boundaries  
 - [`docs/PROGRESS.md`](docs/PROGRESS.md) — implementation status  

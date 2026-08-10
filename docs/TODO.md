@@ -80,12 +80,12 @@ release-hardening phase.
   identifiers. The workflow grants only read access to repository contents,
   and weekly Dependabot updates provide the reviewable update process. CI no
   longer executes mutable action tags.
-- [ ] **Document runtime trust boundaries.** State that FFmpeg is resolved
-  through `PATH` and LibVLC is loaded dynamically; recommend trusted
-  package-manager installations; document supported VLC majors and analysis
-  limits; and add malicious-media and dependency-audit checks to the release
-  checklist. **Done when:** release documentation accurately describes
-  external-code and untrusted-media risks.
+- [x] **Document runtime trust boundaries.** `docs/SECURITY.md` now identifies
+  FFmpeg-on-`PATH`, dynamically loaded LibVLC/plugins, VLC 3.x-only ABI support,
+  untrusted in-process media parsing, and the compiled analysis/cover limits.
+  User and release docs require trusted distribution channels and environment
+  review. The release checklist now includes dependency policy, exception
+  expiry, and malformed/oversized-media regression checks.
 
 ## Tier 0 — Correctness fixes (small, isolated, do first)
 

@@ -8,6 +8,14 @@ Use this when cutting a local or public release of the `tz-player` binary.
 - [ ] `cargo fmt --all -- --check`
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings`
 - [ ] `cargo test --workspace`
+- [ ] `cargo audit` (every warning is absent or matches an unexpired exception
+      in `docs/SECURITY.md` and `deny.toml`)
+- [ ] `cargo deny --locked check advisories bans licenses sources`
+- [ ] No temporary security exception is past its documented expiration date
+- [ ] Malicious-media regression tests pass:
+      `cargo test -p tz-analysis decode::tests`,
+      `cargo test -p tz-core metadata::tests`, and
+      `cargo test -p tz-tui cover_ascii::tests`
 - [ ] Manual smoke: `cargo run -p tz-player -- doctor`
 - [ ] Manual smoke: add a track, play with VLC, cycle visualizers (`z`), quit, re-open (state restores)
 
@@ -35,11 +43,17 @@ Optional smoke with the release binary:
 
 | Dependency | Required? | Role |
 |------------|-----------|------|
-| **VLC** (with libVLC) | Yes for real audio | Playback; loaded dynamically at runtime |
-| **FFmpeg** on `PATH` | Optional | Offline analysis for spectrum/beat/waveform visualizers |
+| **VLC 3.x** (with libVLC) | Yes for real audio | Playback; library and plugins are loaded dynamically; other majors fail closed |
+| **FFmpeg** on `PATH` | Optional | First matching executable runs for offline spectrum/beat/waveform analysis |
 | Terminal with color | Recommended | Colored visualizers (still usable monochrome) |
 
-Install hints: `tz-player setup` or platform package manager (`winget`, `brew`, distro packages).
+Install VLC and FFmpeg only from a trusted package manager or verified
+distribution channel. Do not release with an unexpected FFmpeg path,
+`VLC_PLUGIN_PATH`, LibVLC path, or VLC major. Run `tz-player doctor` on each
+target OS and record the discovered VLC location and FFmpeg availability.
+Separately record the package versions and the first `ffmpeg` on `PATH` in the
+release notes. See `docs/SECURITY.md` for the complete trust model and
+analysis/cover-art limits.
 
 ## Data locations
 
@@ -74,4 +88,4 @@ Bump that crate version (and workspace if desired) before tagging.
 
 ## Rollback
 
-Delete or rename the data/state paths above, or restore a previous binary. Schema is SQLite v7; avoid mixing with Python DB files.
+Delete or rename the data/state paths above, or restore a previous binary. Schema is SQLite v8; avoid mixing with Python DB files.
