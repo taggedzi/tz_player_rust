@@ -15,9 +15,9 @@ together whenever an exception is added, renewed, or removed.
 
 ## Runtime trust boundaries
 
-### External executable and library code
+### Playback and analysis code
 
-`tz-player` does not bundle its playback and optional analysis engines:
+The selected backend changes which trusted code parses playback media:
 
 - **FFmpeg is executable code selected through `PATH`.** For non-WAV offline
   analysis, the first `ffmpeg` executable found through the process environment
@@ -30,23 +30,33 @@ together whenever an exception is added, renewed, or removed.
   the plugin directory; a pre-existing value is respected. Only the VLC 3.x
   ABI is supported. Other majors and unparseable versions are rejected before
   ABI-specific symbols are resolved.
+- **Rodio, Symphonia, and CPAL are Rust dependencies compiled into the
+  application.** They do not discover VLC or FFmpeg when Rodio is selected.
+  Symphonia parses supported playback containers/codecs in the player process,
+  and CPAL opens the operating system's default output device. Their versions
+  are pinned by `Cargo.lock` and covered by the dependency policy above.
 
 Install VLC 3.x and FFmpeg only from the operating-system package manager or
 another source whose binaries and update channel you trust. Do not put
 user-writable download directories ahead of trusted system directories on
 `PATH`, and do not point `VLC_PLUGIN_PATH` at an untrusted directory. Run
-`tz-player doctor` after installation or environment changes to check the
-discovered VLC path and FFmpeg availability. Separately inspect the first
-`ffmpeg` on `PATH` and the installed VLC/FFmpeg versions before playing media.
+`tz-player --backend <name> doctor` after installation or environment changes
+to check only the selected playback backend plus FFmpeg availability.
+Separately inspect the first `ffmpeg` on `PATH` and the installed VLC/FFmpeg
+versions before playing media. Copying only `libvlc.dll` beside the executable
+is not a supported deployment: libVLC also requires its matching core library
+and plugin tree, and mismatching those files expands the loader/parser risk.
 
 ### Untrusted media
 
 Treat filenames, tags, cover art, WAV data, and codec input as untrusted.
 Metadata and native WAV parsing occur in the Rust process; LibVLC parses
-playback media in-process; FFmpeg parses analysis media in a child process.
-Resource limits reduce denial-of-service exposure, but they do not make an
-outdated native codec or parser safe. Keep VLC, FFmpeg, and Rust dependencies
-patched, and use OS-level isolation when examining deliberately hostile files.
+playback media in-process when VLC is selected; Symphonia parses playback media
+in-process when Rodio is selected; FFmpeg parses analysis media in a child
+process. Resource limits reduce denial-of-service exposure, but they do not
+make an outdated native codec or parser safe. Keep VLC, FFmpeg, and Rust
+dependencies patched, and use OS-level isolation when examining deliberately
+hostile files.
 
 Offline analysis streams input under these limits:
 

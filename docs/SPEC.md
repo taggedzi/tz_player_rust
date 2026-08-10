@@ -11,6 +11,7 @@ Local-first terminal music player with a keyboard-first TUI.
 | Concern | Implementation |
 |---------|----------------|
 | Playback | VLC / libVLC (`--backend vlc`, default) |
+| Experimental playback | Rodio / Symphonia / system audio (`--backend rodio`) |
 | Fallback / CI | Fake backend (`--backend fake`) |
 | Analysis for visualizers | FFmpeg (optional) + native WAV |
 | Custom minimal FFmpeg | Future; analysis path only |
@@ -18,7 +19,7 @@ Local-first terminal music player with a keyboard-first TUI.
 ## 3. In scope (parity)
 
 - Playlist management (SQLite)
-- Playback via pluggable backend (VLC + fake)
+- Playback via pluggable backend (VLC + experimental Rodio + fake)
 - Keyboard-first TUI (ratatui)
 - Persistent state (volume, speed, repeat, shuffle, backend, visualizer)
 - Cached metadata
@@ -34,6 +35,7 @@ Local-first terminal music player with a keyboard-first TUI.
 - Remote control / web UI (later)
 - Voice / local AI (later)
 - Replacing VLC with FFmpeg for listening
+- Promoting Rodio to the default without a separate evaluated decision
 - Python visualizer plugin compatibility
 
 ## 5. Workflows
@@ -52,6 +54,9 @@ Same acceptance intent as Python WF-01..WF-07:
 
 Playback speed clamp: **0.5x – 4.0x** (step 0.25).
 
+Rodio rate changes also change pitch. Pitch-preserving time stretching is out
+of scope for the parity contract.
+
 ## 7. Config precedence
 
 1. CLI flags for current run  
@@ -60,6 +65,9 @@ Playback speed clamp: **0.5x – 4.0x** (step 0.25).
 
 ## 8. Quality gates
 
-- `cargo fmt --check`
-- `cargo clippy --workspace -- -D warnings`
-- `cargo test --workspace`
+- `cargo fmt --all -- --check`
+- `cargo check --workspace --all-targets --locked`
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
+- `cargo test --workspace --locked`
+- `cargo audit`
+- `cargo deny --locked check advisories bans licenses sources`

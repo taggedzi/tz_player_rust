@@ -2,7 +2,9 @@
 
 Rust rewrite of [tz-player](https://github.com/taggedzi/tz-player) — a keyboard-driven, local-first terminal music player.
 
-**Status:** feature-complete for v1 parity slice (playlist, VLC playback, analysis caches, TUI, built-in visualizers). See [`docs/PROGRESS.md`](docs/PROGRESS.md).
+**Status:** feature-complete for the v1 parity slice, with VLC playback by
+default and an opt-in experimental Rodio backend under evaluation. See
+[`docs/PROGRESS.md`](docs/PROGRESS.md).
 
 **Conversion plan (phases, decisions, backlog for AIs/humans):** [`docs/CONVERSION_PLAN.md`](docs/CONVERSION_PLAN.md)
 
@@ -10,14 +12,18 @@ Rust rewrite of [tz-player](https://github.com/taggedzi/tz-player) — a keyboar
 
 | Role | Technology |
 |------|------------|
-| **Playback (listen path)** | **VLC 3.x / libVLC** (dynamic load from install; required for real audio; other majors fail closed) |
+| **Playback (default)** | **VLC 3.x / libVLC** (dynamic load from a complete VLC install; other majors fail closed) |
+| **Playback (experimental)** | **Rodio 0.22 + Symphonia + system audio** (`--backend rodio`; no VLC/FFmpeg runtime) |
 | **Analysis / visualizers** | **FFmpeg** (optional) + native WAV |
 | **Tests / fallback** | Fake playback backend |
 
-FFmpeg is **not** used for listening in v1.
+FFmpeg is **not** used for listening. Rodio supports the common MP3, FLAC,
+WAV, Vorbis, AAC/M4A, ALAC, AIFF, CAF, and Matroska families, while VLC remains
+the broader-compatibility default. See the backend capability table in
+[`docs/usage.md`](docs/usage.md).
 
-VLC and FFmpeg execute trusted external/native code: install them through a
-trusted package manager, keep them patched, and review
+VLC and FFmpeg execute trusted external/native code; Rodio/Symphonia parses
+media in the player process. Keep every selected component patched and review
 [`docs/SECURITY.md`](docs/SECURITY.md) before processing untrusted media.
 
 ## Quick start
@@ -37,9 +43,16 @@ cargo run -p tz-player -- add E:\Music\some-album
 # Run TUI with real VLC audio
 cargo run -p tz-player --
 
-# Simulated playback (no VLC)
+# Experimental real audio without a VLC runtime
+cargo run -p tz-player -- --backend rodio
+
+# Simulated playback (no audio device)
 cargo run -p tz-player -- --backend fake
 ```
+
+Linux source builds need the ALSA development package used by Rodio/CPAL (for
+example, `sudo apt install libasound2-dev` on Ubuntu). Windows and macOS require
+no separately installed Rodio codec runtime.
 
 Release binary:
 
@@ -83,7 +96,7 @@ Full reference: [`docs/usage.md`](docs/usage.md).
 crates/
   tz-player      # binary (CLI + TUI entry)
   tz-core        # runtime, player service, metadata, state, levels
-  tz-playback    # PlaybackBackend: Fake + VLC (dynamic libVLC FFI)
+  tz-playback    # PlaybackBackend: VLC + experimental Rodio + Fake
   tz-analysis    # FFmpeg/WAV analysis (envelope, spectrum, beat, waveform)
   tz-control     # structured Command + TransportSnapshot
   tz-db          # SQLite schema v8 + stores + FTS + editor drafts
@@ -94,8 +107,9 @@ crates/
 
 ```powershell
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo check --workspace --all-targets --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
 cargo audit
 cargo deny --locked check advisories bans licenses sources
 ```

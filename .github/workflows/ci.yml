@@ -45,9 +45,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Compile and exercise VLC discovery/startup behavior on every
-        # supported desktop platform. A missing local VLC install is an
-        # expected, explicitly tested outcome.
+        # Compile both real backends on every supported desktop platform.
+        # Missing local VLC installs and hosted-runner audio devices are
+        # expected, explicitly tested outcomes.
         os: [windows-latest, ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -60,11 +60,20 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
+      - name: Install Linux audio build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libasound2-dev
+
       - name: Format
         run: cargo fmt --all -- --check
 
+      - name: Check
+        run: cargo check --workspace --all-targets --locked
+
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --locked

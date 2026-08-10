@@ -7,25 +7,55 @@ tz-player setup
 tz-player doctor
 ```
 
-- **VLC 3.x** — required for real audio (libVLC loaded at runtime). The VLC 4
+- **VLC 3.x** — the default real-audio backend (libVLC loaded at runtime). A
+  complete VLC installation is required: `libvlc.dll` alone is not enough
+  because libVLC also loads `libvlccore` and codec/output plugins. The VLC 4
   ABI changes player construction, seek signatures, and clocks to
   microseconds; tz-player rejects it until a complete VLC 4 backend exists.
+- **Rodio** — an experimental real-audio backend selected with `--backend
+  rodio`. Rodio, Symphonia, and CPAL are compiled into the application; no VLC
+  or FFmpeg runtime is required. Linux source builds need the platform audio
+  development files (for example, `libasound2-dev` on Ubuntu).
 - **FFmpeg** — optional; improves analysis for spectrum / beat / waveform visualizers.
 
 Install both only through a trusted operating-system package manager or another
 verified distribution channel. FFmpeg is the first `ffmpeg` executable found
 on `PATH`, while LibVLC and its plugins are dynamically loaded into the player
-process. Do not shadow FFmpeg with a binary in a user-writable directory or set
-`VLC_PLUGIN_PATH` to an untrusted directory. Run `tz-player doctor` after
-installation or environment changes, and separately verify which `ffmpeg`
-executable is first on `PATH`. See [the security policy](SECURITY.md) for the
-complete runtime trust boundaries and resource limits.
+process. Rodio opens the operating system's default output device and parses
+supported playback media in-process through Symphonia. Do not shadow FFmpeg
+with a binary in a user-writable directory or set `VLC_PLUGIN_PATH` to an
+untrusted directory. Run `tz-player --backend <name> doctor` after installation
+or environment changes, and separately verify which `ffmpeg` executable is
+first on `PATH`. See [the security policy](SECURITY.md) for the complete runtime
+trust boundaries and resource limits.
+
+## Playback backends
+
+| Backend | Select | Runtime | Format policy |
+|---------|--------|---------|---------------|
+| VLC | `--backend vlc` (default) | Complete supported VLC 3.x installation | Broad compatibility through VLC plugins |
+| Rodio | `--backend rodio` | Built-in Rodio/Symphonia plus a working default audio device | MP1/2/3, FLAC, WAV/ADPCM, Ogg Vorbis, AAC, ALAC, AIFF, CAF, supported Matroska/WebM audio |
+| Fake | `--backend fake` | None | No audio; deterministic UI/tests |
+
+The shared playlist accepts some formats Rodio does not decode, including Ogg
+Opus, WMA, Monkey's Audio, WavPack, AC-3, DTS, Musepack, TTA, Speex, and MIDI.
+Selecting one of those entries under Rodio reports a bounded per-track error;
+it does not silently switch to VLC. If the selected real backend cannot start,
+the TUI stays usable with Fake, identifies both the requested and effective
+backend, and preserves the requested preference for the next run.
+
+Rodio's speed control changes pitch with rate. VLC behavior depends on its
+audio output pipeline. Pitch-preserving time stretching is not currently part
+of the playback contract.
 
 ## Common commands
 
 ```powershell
 # Interactive TUI
 tz-player
+
+# Experimental Rodio playback
+tz-player --backend rodio
 
 # Force fake playback (no audio; good for UI-only tests)
 tz-player --backend fake
@@ -38,6 +68,7 @@ tz-player list --limit 20
 
 # Diagnostics
 tz-player doctor
+tz-player --backend rodio doctor
 tz-player paths
 tz-player --version
 ```
@@ -52,6 +83,12 @@ Build from source:
 ```powershell
 cargo run -p tz-player --
 cargo build --release -p tz-player
+
+# Silent Rodio output check; does not play audio
+cargo run -p tz-playback --example rodio_smoke -- --startup-only
+
+# Explicit manual Rodio playback smoke
+cargo run -p tz-playback --example rodio_smoke -- path\to\track.flac
 ```
 
 ## TUI keys

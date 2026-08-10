@@ -1,7 +1,7 @@
 # tz-player Python → Rust Conversion Plan
 
 **Status:** v1 parity largely complete; this document is the durable plan reference  
-**Last updated:** 2026-08-08  
+**Last updated:** 2026-08-10
 **Audience:** humans and AIs continuing the rewrite or post-parity work  
 
 This plan was drafted in an interactive planning session and approved before Phase 0. It was executed in conversation but was **not originally written into the repo**. This file reconstructs that plan from session decisions, ADRs, SPEC, architecture notes, and current tree state so work can resume without chat history.
@@ -12,11 +12,14 @@ This plan was drafted in an interactive planning session and approved before Pha
 
 Rewrite [Python tz-player](https://github.com/taggedzi/tz-player) as a **Rust** local-first terminal music player with:
 
-1. **Feature parity** with the current Python product (playlist, VLC playback, analysis caches, TUI, visualizers, doctor/setup).
+1. **Feature parity** with the current Python product (playlist, VLC playback, analysis caches, TUI, visualizers, doctor/setup), plus an additive experimental Rodio backend.
 2. **Lower resource use** and a path to a **headless multi-process** appliance later.
 3. **Safe coexistence** with Python installs (separate data identity).
 
-**Not goals for v1 parity:** streaming services, cloud accounts, web UI, voice/AI, replacing VLC with FFmpeg for listening, or Python visualizer plugin ABI compatibility.
+**Not goals for v1 parity:** streaming services, cloud accounts, web UI,
+voice/AI, replacing VLC with FFmpeg for listening, promoting Rodio over VLC
+without a later evaluated decision, or Python visualizer plugin ABI
+compatibility.
 
 ### Source and target
 
@@ -38,9 +41,9 @@ When behavior is ambiguous, prefer **Python runtime behavior + `_ref_tz_player` 
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Playback (listen path) | **VLC / libVLC** (dynamic load) | Current product parity; broad format coverage |
+| Playback (listen path) | **VLC / libVLC** (dynamic load) by default; experimental **Rodio/Symphonia/CPAL** opt-in per [ADR-0003](adr/ADR-0003-add-experimental-rodio-backend.md) | Preserve parity and broad VLC coverage while evaluating a no-VLC runtime |
 | Analysis path | **FFmpeg CLI + native WAV** only | Visualizers/levels; must not block listening |
-| Fake backend | Required for tests + fallback when VLC fails | CI and safe degradation |
+| Fake backend | Required for tests + fallback when a selected real backend fails startup | CI and safe degradation |
 | TUI | **ratatui + crossterm** | Keyboard-first terminal UI |
 | CLI | **clap** | `doctor`, `setup`, `paths`, `add`, `list`, default TUI |
 | DB | **SQLite schema v8** + **FTS5** with LIKE fallback | Python-compatible analysis/playlist model plus transient editor drafts |
@@ -51,14 +54,15 @@ When behavior is ambiguous, prefer **Python runtime behavior + `_ref_tz_player` 
 | Custom slim FFmpeg | **Deferred**; analysis-only if ever | Not a v1 playback engine |
 | Speed clamp | **0.5x–4.0x**, step 0.25 | Match Python ADR |
 
-Media split (non-negotiable for v1):
+Media split (the listen/analysis boundary remains non-negotiable):
 
 ```text
 LISTEN PATH                         ANALYSIS PATH
 ───────────                         ─────────────
 tz-playback                         tz-analysis
-  VlcBackend  ──► system audio        FFmpeg CLI / WAV
-  FakeBackend ──► tests/fallback        │
+  VlcBackend   ──► system audio        FFmpeg CLI / WAV
+  RodioBackend ─► system audio           │
+  FakeBackend  ─► tests/fallback         │
                                         ▼
                               envelope / spectrum / beat / waveform
                                         │
@@ -66,7 +70,9 @@ tz-playback                         tz-analysis
                               visualizers (tz-tui)
 ```
 
-Frontends must **not** link VLC or FFmpeg APIs directly. See [ADR-0001](adr/ADR-0001-rust-crate-architecture-and-media-split.md).
+Frontends must **not** link VLC, Rodio, Symphonia, CPAL, or FFmpeg APIs
+directly. See [ADR-0001](adr/ADR-0001-rust-crate-architecture-and-media-split.md)
+and its additive amendment [ADR-0003](adr/ADR-0003-add-experimental-rodio-backend.md).
 
 ---
 
@@ -76,7 +82,7 @@ Frontends must **not** link VLC or FFmpeg APIs directly. See [ADR-0001](adr/ADR-
 crates/
   tz-player      # binary: CLI entry + TUI launch
   tz-core        # AppRuntime, PlayerService, paths, AppState, metadata, LevelService
-  tz-playback    # PlaybackBackend trait; Fake; VLC (libloading + worker thread)
+  tz-playback    # PlaybackBackend trait; VLC; experimental Rodio; Fake
   tz-analysis    # decode + envelope/spectrum/beat/waveform analysis
   tz-control     # Command / TransportSnapshot (stable boundary)
   tz-db          # schema migrations, PlaylistStore, analysis stores, FTS
@@ -103,7 +109,7 @@ CLI / TUI
    ▼
 AppRuntime ──► PlaylistStore (SQLite)
    │
-   └──► PlayerService ──► PlaybackBackend (Fake | VLC)
+   └──► PlayerService ──► PlaybackBackend (VLC | Rodio | Fake)
                 │
                 └── LevelService (analysis caches for visualizers)
 ```
@@ -126,7 +132,8 @@ IPC (Unix sockets / Windows named pipes, length-prefixed binary messages) is **o
 
 - Default playlist CRUD: add paths, remove, clear, reorder, wrap next/prev, shuffle, sparse `pos_key`
 - Search: FTS5 + LIKE fallback (title/artist/album/path-oriented ranking as in Python)
-- Playback: play/pause/stop/seek/volume/speed/repeat/shuffle via VLC or Fake
+- Playback: play/pause/stop/seek/volume/speed/repeat/shuffle via VLC,
+  experimental Rodio, or Fake
 - State persistence: volume, speed, repeat, shuffle, backend, visualizer id, paths
 - Metadata upsert/invalidate (lofty); snapshots for UI
 - Lazy analysis caches: envelope, spectrum, beat, waveform-proxy → SQLite
@@ -150,7 +157,7 @@ IPC (Unix sockets / Windows named pipes, length-prefixed binary messages) is **o
 
 | ID | Workflow | v1 intent |
 |----|----------|-----------|
-| WF-01 | Launch and recover state | Load state; VLC fail → Fake + message; usable TUI |
+| WF-01 | Launch and recover state | Load state; selected real backend fail → Fake + requested/effective message; usable TUI |
 | WF-02 | Navigate playlist | Cursor, Home/End, reorder; deterministic rows |
 | WF-03 | Playback control | Transport keys; status reflects player |
 | WF-04 | Find/search | `f` filter via FTS/LIKE; Esc exits |
@@ -210,7 +217,8 @@ Phases are sequential for dependencies but many sub-tasks inside a phase can be 
 
 ### Phase 2 — Playback backends
 
-**Goal:** Pluggable listen path with real audio on Windows via system VLC.
+**Goal:** Pluggable listen path with VLC as the compatibility default and an
+evaluated opt-in Rodio path.
 
 | Deliverable | Done when |
 |-------------|-----------|
@@ -221,15 +229,20 @@ Phases are sequential for dependencies but many sub-tasks inside a phase can be 
 | Windows discovery | Program Files VideoLAN; `PATH` / `AddDllDirectory`; `VLC_PLUGIN_PATH` |
 | Quiet default; `TZ_PLAYER_VLC_VERBOSE=1` | Doctor/smoke usable |
 | Smoke example | `cargo run -p tz-playback --example vlc_smoke` advances position |
-| Fail closed → Fake | Runtime falls back if VLC cannot start |
+| Fail closed → Fake | Runtime falls back if the requested real backend cannot start |
+| Rodio worker + streaming decode | Dedicated output worker; Symphonia common-format coverage; no audio hardware in normal tests |
+| Rodio selection + diagnostics | `--backend rodio`, persisted preference, selected-backend doctor, silent/manual smoke |
+| Format/end matrix | MP3, FLAC, WAV, Vorbis, AAC, ALAC, AIFF, CAF, MKA; repeat/shuffle transitions |
 
 **Implementation notes (locked):**
 
 - Prefer dynamic install DLL over static linking.
 - Modern VLC dropped `--plugin-path`; set env `VLC_PLUGIN_PATH`.
 - Modules: `vlc_ffi.rs`, `vlc_engine.rs`, `vlc.rs`.
+- Rodio remains experimental and never silently switches to/from VLC. See the
+  approved design and plan under `docs/superpowers/` and ADR-0003.
 
-**Status: DONE**
+**Status: DONE (VLC parity) + RODIO EXPERIMENT IMPLEMENTED; evaluation pending**
 
 ---
 
@@ -338,8 +351,8 @@ Phases are sequential for dependencies but many sub-tasks inside a phase can be 
 
 | Deliverable | Done when |
 |-------------|-----------|
-| `doctor` | Version, paths, log dir, VLC/FFmpeg hints |
-| `setup` | Guidance for deps |
+| `doctor` | Version, paths, log dir, selected VLC/Rodio output check, FFmpeg hints |
+| `setup` | Guidance for VLC, Rodio, Fake, and optional FFmpeg |
 | `paths` | Data/state locations for `tz-player-rs` |
 
 **Status: DONE**
@@ -381,7 +394,7 @@ Ordered backlog for later work (not blocking v1 claim):
 
 | Priority | Workstream | Notes |
 |----------|------------|--------|
-| A | Live VLC level / PCM sampling | True oscilloscope-class visualizers |
+| A | Live playback-backend PCM sampling | True oscilloscope-class visualizers |
 | B | Perf benches vs Python | Opt-in; compare analysis + UI idle |
 | C | Headless control server | `tz-player serve` over IPC using `tz-control` |
 | D | Multi-process split | Controller / Engine / Library Manager processes |
@@ -407,7 +420,9 @@ This is the order actually used after plan approval (useful if restarting from a
 7. Phase 9 polish, Phase 8 doctor, Phase 10 docs  
 8. Visualizer fidelity fixes (centering, bounce, cover art, particle ports matching Python)
 
-Do **not** start with pure-Rust decode/output (Symphonia+cpal) as the default listen path; that was explicitly rejected for v1.
+Do **not** start with pure-Rust decode/output (Symphonia+CPAL) as the default
+listen path; that was explicitly rejected for v1. ADR-0003 later approved an
+additive, opt-in Rodio implementation for evaluation, not a default change.
 
 ---
 
@@ -415,14 +430,18 @@ Do **not** start with pure-Rust decode/output (Symphonia+cpal) as the default li
 
 ```powershell
 cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo check --workspace --all-targets --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+cargo audit
+cargo deny --locked check advisories bans licenses sources
 ```
 
 Notes:
 
 - Clippy args after `--` go to rustc. Do **not** append unrelated tokens (e.g. stray `- clean`); run `cargo clean` as its own command.
 - VLC smoke (manual, optional): `cargo run -p tz-playback --example vlc_smoke`
+- Rodio silent smoke: `cargo run -p tz-playback --example rodio_smoke -- --startup-only`
 - Prefer Fake backend in automated tests.
 
 ---
@@ -433,9 +452,10 @@ Notes:
 |-------|--------|
 | Primary OS | Windows (PowerShell) |
 | VLC | System install; dynamic load |
+| Rodio | Compiled in; default OS output; Linux source builds need ALSA development files |
 | FFmpeg | Optional on PATH for analysis quality |
 | Verbose VLC | `TZ_PLAYER_VLC_VERBOSE=1` |
-| Backend override | `tz-player --backend fake` |
+| Backend override | `tz-player --backend vlc|rodio|fake` |
 | Data dir | platformdirs under **`tz-player-rs`** identity |
 | Reference Python | `_ref_tz_player/` for behavior and visualizer math |
 
@@ -474,6 +494,7 @@ Pick from Phase 11+ or fidelity/polish:
 | [RELEASE.md](RELEASE.md) | Release steps |
 | [adr/ADR-0001…](adr/ADR-0001-rust-crate-architecture-and-media-split.md) | Crate + media split |
 | [adr/ADR-0002…](adr/ADR-0002-data-directory-identity.md) | Data dir identity |
+| [adr/ADR-0003…](adr/ADR-0003-add-experimental-rodio-backend.md) | Additive experimental Rodio backend |
 | [tz_player_v2_future_project.md](tz_player_v2_future_project.md) | Post-parity vision |
 | `_ref_tz_player/docs/*` | Python ADRs, workflows, gap analysis |
 

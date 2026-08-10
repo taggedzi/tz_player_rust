@@ -1,6 +1,6 @@
 # Implementation progress
 
-Last updated: 2026-08-09
+Last updated: 2026-08-10
 
 **Full conversion plan (actionable, AI-consumable):** [`CONVERSION_PLAN.md`](CONVERSION_PLAN.md)
 
@@ -10,13 +10,13 @@ Last updated: 2026-08-09
 |-------|--------|-------|
 | 0 Foundation | **Done** | Cargo workspace, CI, ADRs, SPEC, media split |
 | 1 DB + state | **Done** | Schema v8, FTS5, `PlaylistStore`, transient editor drafts, `AppState` |
-| 2 Playback | **Done** | Fake + VLC dynamic libVLC FFI |
+| 2 Playback | **Done + experiment** | Fake + VLC dynamic libVLC FFI; opt-in Rodio/Symphonia/CPAL backend implemented and under compatibility evaluation |
 | 3 Control API | **Done** | Structured `Command` + `AppRuntime` |
 | 4 TUI | **Done** | ratatui playlist, transport, visualizer pane, find, staged dual-pane playlist editor, help |
 | 5 Metadata | **Done** | lofty tags + embedded cover for Cover ASCII |
 | 6 Analysis | **Done** | Envelope + spectrum + beat + waveform-proxy caches via `LevelService` |
 | 7 Visualizers | **Done (full built-in pack)** | 26 plugins: spectrum, matrix×3, waveform×2, hackscope, typography, cover×2, particle pack×11 |
-| 8 Doctor/setup | **Done** | Paths, version banner, release build tip |
+| 8 Doctor/setup | **Done** | Selected-backend VLC/Rodio diagnostics, silent smoke tools, paths, version banner, release build tip |
 | 9 Hardening | **Done (v1)** | Status TTL, empty playlist UX, analysis readiness, better feedback |
 | 10 Packaging | **Done (docs)** | README, usage, RELEASE checklist |
 | 11+ Future | Deferred | See CONVERSION_PLAN §5 Phase 11+ |
@@ -26,7 +26,9 @@ Last updated: 2026-08-09
 ```powershell
 cargo run -p tz-player -- add path\to\music
 cargo run -p tz-player --
+cargo run -p tz-player -- --backend rodio
 cargo run -p tz-player -- doctor
+cargo run -p tz-player -- --backend rodio doctor
 ```
 
 ### Keys (summary)
@@ -56,7 +58,7 @@ Investigated Phase 11+ item A (live VLC PCM sampling); measured that `libvlc_med
 
 ## Remaining (optional / post-parity)
 
-1. Live VLC level / PCM sampling (true oscilloscope-class visualizers)
+1. Live playback-backend PCM sampling (true oscilloscope-class visualizers)
 2. Perf benches vs Python
 3. Headless control server / multi-process appliance (`tz-control` IPC)
 4. Sidecar cover art, Python data import, engine upgrades (gapless/EQ/devices)

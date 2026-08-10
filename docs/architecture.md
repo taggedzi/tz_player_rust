@@ -1,13 +1,14 @@
 # Architecture (Rust tz-player)
 
-## Media roles (non-negotiable for v1)
+## Media roles
 
 ```text
 LISTEN PATH                         ANALYSIS PATH
 ───────────                         ─────────────
 tz-playback                         tz-analysis
-  VlcBackend  ──► system audio        FFmpeg CLI / WAV
-  FakeBackend ──► tests/fallback        │
+  VlcBackend   ──► system audio        FFmpeg CLI / WAV
+  RodioBackend ─► system audio           │
+  FakeBackend  ─► tests/fallback         │
                                         ▼
                               spectrum / beat / waveform / envelope
                                         │
@@ -15,10 +16,14 @@ tz-playback                         tz-analysis
                               visualizers (tz-tui)
 ```
 
-- **VLC** owns decoding and device output for listening.
+- **VLC** owns decoding and device output for the default listen path.
+- **Rodio** is an opt-in experimental listen path. A dedicated worker owns
+  Rodio's player and CPAL output; Symphonia streams decode in-process.
 - **FFmpeg** is only for offline PCM used by visualizers and level caches.
 - Missing FFmpeg must never block playback.
-- Missing VLC falls back to Fake + doctor/setup guidance.
+- A selected real backend that cannot initialize falls back to Fake with the
+  requested/effective distinction; Rodio and VLC never silently switch to one
+  another.
 
 ## Crate dependency direction
 
@@ -28,12 +33,12 @@ tz-player (bin)
   ├── tz-core ─────────────► tz-playback, tz-db, tz-control
   │     AppRuntime + PlayerService + metadata (lofty)
   ├── tz-control             structured Command / TransportSnapshot
-  ├── tz-playback            Fake + VLC dynamic libVLC FFI (listen path only)
+  ├── tz-playback            VLC FFI + Rodio/Symphonia/CPAL + Fake (listen path)
   ├── tz-analysis            FFmpeg only here
   └── tz-db                  schema + PlaylistStore + FTS
 ```
 
-Frontends must not import VLC or FFmpeg APIs directly.
+Frontends must not import VLC, Rodio, Symphonia, CPAL, or FFmpeg APIs directly.
 
 ## Runtime flow
 
@@ -43,8 +48,13 @@ CLI / TUI
    ▼
 AppRuntime ──► PlaylistStore (SQLite)
    │
-   └──► PlayerService ──► PlaybackBackend (Fake | VLC)
+   └──► PlayerService ──► PlaybackBackend (VLC | Rodio | Fake)
 ```
+
+VLC and Rodio each isolate device/decoder ownership on a dedicated worker.
+Backend commands receive bounded acknowledgements, while transport polling
+reads a cheap snapshot. Rodio tracks decoded source samples before its rate
+filter so the public position remains in the original media timeline.
 
 ## Headless core
 
@@ -56,5 +66,5 @@ Playback, playlists, and state live outside the TUI. `tz-control` commands are t
 
 ## Data
 
-- SQLite: schema version 7 baseline (Python compatibility)
+- SQLite: schema version 8 (Python baseline plus transient editor drafts)
 - JSON state: atomic writes under a **new** app identity (`tz-player-rs`) so Python installs are not corrupted
