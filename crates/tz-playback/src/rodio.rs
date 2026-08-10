@@ -428,4 +428,45 @@ mod tests {
 
         backend.shutdown().await.unwrap();
     }
+
+    #[tokio::test]
+    async fn silent_transport_controls_work_through_output_when_device_exists() {
+        let path = silent_wav(3_000);
+        let mut backend = RodioPlaybackBackend::new();
+        match backend.start().await {
+            Ok(()) => {}
+            Err(PlaybackError::RodioUnavailable(_)) => {
+                fs::remove_file(path).unwrap();
+                return;
+            }
+            Err(error) => panic!("unexpected Rodio startup result: {error}"),
+        }
+        backend.set_volume(0).await.unwrap();
+        backend.play(7, &path, 0, Some(3_000)).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(80)).await;
+
+        backend.toggle_pause().await.unwrap();
+        assert_eq!(backend.get_state().await.unwrap(), BackendStatus::Paused);
+        backend.seek_ms(1_500).await.unwrap();
+        assert_eq!(backend.get_position_ms().await.unwrap(), 1_500);
+        backend.seek_ms(300).await.unwrap();
+        assert_eq!(backend.get_position_ms().await.unwrap(), 300);
+
+        for speed in [0.5, 1.0, 2.0, 4.0] {
+            backend.set_speed(speed).await.unwrap();
+        }
+        backend.toggle_pause().await.unwrap();
+        assert_eq!(backend.get_state().await.unwrap(), BackendStatus::Playing);
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(backend.get_position_ms().await.unwrap() > 300);
+
+        backend.stop().await.unwrap();
+        assert_eq!(
+            backend.get_transport_snapshot().await.unwrap(),
+            (0, 3_000, BackendStatus::Stopped)
+        );
+        backend.shutdown().await.unwrap();
+        backend.shutdown().await.unwrap();
+        fs::remove_file(path).unwrap();
+    }
 }

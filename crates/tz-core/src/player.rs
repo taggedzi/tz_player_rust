@@ -788,6 +788,60 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
+    #[tokio::test]
+    async fn rodio_real_output_natural_end_advances_once_when_device_exists() {
+        let dir = std::env::temp_dir().join(format!(
+            "tz_player_rodio_service_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let store = PlaylistStore::new(dir.join("db.sqlite"));
+        store.initialize().unwrap();
+        let playlist_id = store.create_playlist("Rodio output").unwrap();
+        let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("tz-playback")
+            .join("tests")
+            .join("fixtures");
+        let paths = [fixtures.join("tone.wav"), fixtures.join("tone.flac")];
+        store.add_tracks(playlist_id, &paths).unwrap();
+        let ids = store.list_item_ids(playlist_id).unwrap();
+
+        let mut player = PlayerService::new(store, BackendKind::Rodio);
+        match player.start().await {
+            Ok(()) => {}
+            Err(PlaybackError::RodioUnavailable(_)) => {
+                let _ = fs::remove_dir_all(dir);
+                return;
+            }
+            Err(error) => panic!("unexpected Rodio startup result: {error}"),
+        }
+        player.set_volume(0).await.unwrap();
+        player.set_speed(4.0).await.unwrap();
+        player.play_item(playlist_id, ids[0]).await.unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while player.snapshot().await.item_id != Some(ids[1]) && Instant::now() < deadline {
+            player.poll_position().await;
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(player.snapshot().await.item_id, Some(ids[1]));
+        for _ in 0..5 {
+            player.poll_position().await;
+        }
+        assert_eq!(
+            player.snapshot().await.item_id,
+            Some(ids[1]),
+            "one natural end must advance exactly one playlist item"
+        );
+
+        player.shutdown().await.unwrap();
+        let _ = fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn repeat_cycle() {
         assert_eq!(RepeatMode::Off.cycle(), RepeatMode::One);
