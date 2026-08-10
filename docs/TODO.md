@@ -55,10 +55,12 @@ release-hardening phase.
   1.88. TUI/player tests pass and `cargo audit` no longer reports
   RUSTSEC-2026-0002. The full strict Clippy gate is completed in the dedicated
   checklist task below.
-- [ ] **Resolve the unmaintained `paste` dependency.** Upgrade Ratatui and Lofty
-  where possible. If no compatible upgrade removes it, document a temporary
-  advisory exception with an owner and expiration date. **Done when:** `paste`
-  is removed or explicitly tracked as accepted technical risk.
+- [x] **Resolve the unmaintained `paste` dependency.** Ratatui 0.30.2 removed
+  its dependency, and Lofty was upgraded to 0.25.0, but the current Lofty
+  release still requires `paste` 1.0.15. RUSTSEC-2024-0436 is therefore tracked
+  in `docs/SECURITY.md` as an accepted build-time risk owned by the repository
+  maintainer and expiring 2026-11-08. `Cargo.lock` pins the version and the
+  dependency path is now Lofty-only.
 - [ ] **Restore the documented Clippy gate.** Move helper functions before the
   test module in `vlc_engine.rs`, and resolve or intentionally allow the
   visualizer's `too_many_arguments` warning. **Done when:**

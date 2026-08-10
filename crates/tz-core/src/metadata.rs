@@ -48,7 +48,7 @@ pub fn read_track_meta(path: &Path) -> TrackMeta {
                     tag.title().map(|s| s.to_string()),
                     tag.artist().map(|s| s.to_string()),
                     tag.album().map(|s| s.to_string()),
-                    tag.year().map(|y| y as i32),
+                    tag.date().map(|date| i32::from(date.year)),
                 )
             } else {
                 (None, None, None, None)
