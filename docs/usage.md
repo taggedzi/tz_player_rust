@@ -89,6 +89,16 @@ cargo build --release -p tz-player
 
 Analysis caches (envelope `E`, spectrum `S`, beat `B`, waveform `W`) fill in the background on play/add. Transport shows `analysis:ESBW` when ready, or `analysis:analyzing`.
 
+Offline decoding is bounded and runs once per track even when several caches
+are missing. Defaults limit decoded stereo PCM to 256 MiB, media duration to
+one hour, and FFmpeg/native-WAV execution to two minutes. Advanced users can
+lower or raise those limits with
+`TZ_PLAYER_ANALYSIS_MAX_DECODED_BYTES`,
+`TZ_PLAYER_ANALYSIS_MAX_DURATION_SECS`, and
+`TZ_PLAYER_ANALYSIS_TIMEOUT_SECS`; compiled ceilings remain 1 GiB, six hours,
+and fifteen minutes. FFmpeg stdin is disabled, and any process that reaches a
+limit is killed and reaped.
+
 ## Empty playlist
 
 Press `a` to open the folder browser (arrows to navigate, Enter to open a

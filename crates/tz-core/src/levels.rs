@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use tz_analysis::{
-    analyze_beats_from_decoded, analyze_spectrum_from_decoded, analyze_track_envelope_default,
+    analyze_beats_from_decoded, analyze_envelope_from_decoded, analyze_spectrum_from_decoded,
     analyze_waveform_proxy_from_decoded, decode_track_for_analysis,
 };
 use tz_db::{
@@ -195,15 +195,19 @@ impl LevelService {
             return Ok(());
         }
 
+        // Decode once under tz-analysis's byte/duration/time limits, then
+        // derive every missing cache product from the same PCM allocation.
+        let decoded = decode_track_for_analysis(path).map_err(|e| e.to_string())?;
+
         if need_env {
-            let env = analyze_track_envelope_default(path).map_err(|e| e.to_string())?;
+            let env = analyze_envelope_from_decoded(&decoded, self.envelope.bucket_ms())
+                .map_err(|e| e.to_string())?;
             self.envelope
                 .upsert_envelope(path, env.duration_ms, &env.points)
                 .map_err(|e| e.to_string())?;
         }
 
         if need_spec || need_beat || need_wave {
-            let decoded = decode_track_for_analysis(path).map_err(|e| e.to_string())?;
             if need_spec {
                 let params = self.spectrum.params();
                 let spec =

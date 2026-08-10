@@ -24,13 +24,12 @@ release-hardening phase.
   only platform requiring it. Verify VLC startup on Windows, Linux, and macOS.
   **Done when:** no Unix code mutates the process environment after threads
   start.
-- [ ] **Bound media-analysis resource consumption.** Stream FFmpeg output
-  instead of using unbounded `read_to_end`; enforce configurable decoded-byte,
-  duration, and execution-time limits; kill and reap FFmpeg after timeout or
-  limit violation; set FFmpeg stdin to null; avoid decoding each track twice;
-  and preflight or stream WAV processing rather than collecting every sample.
-  **Done when:** crafted or oversized media cannot cause unbounded memory growth
-  or an indefinite analysis job.
+- [x] **Bound media-analysis resource consumption.** FFmpeg PCM is consumed in
+  bounded streaming chunks with null stdin and decoded-byte, duration, and
+  wall-clock limits; limit and timeout paths kill and reap the child. Native
+  WAV samples are streamed under the same limits, and all four cache products
+  share one decode per track. User overrides have documented hard ceilings.
+  Oversized WAV and FFmpeg paths have regression tests.
 - [ ] **Limit embedded cover-art decoding.** Reject excessively large embedded
   pictures before decoding, set strict image width/height/allocation limits,
   and consider limiting the total metadata and picture payload accepted from
