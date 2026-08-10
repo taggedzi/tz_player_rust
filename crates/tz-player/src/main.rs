@@ -347,6 +347,10 @@ fn cmd_doctor(backend: BackendKind) -> ExitCode {
     println!("  config_dir: {}", terminal_safe_path(&paths.config_dir));
     println!("  log_dir:    {}", terminal_safe_path(&paths.log_dir));
     println!("  state:      {}", terminal_safe_path(&paths.state_file));
+    println!(
+        "  theme:      {}",
+        terminal_safe_path(&paths.config_dir.join("theme.json"))
+    );
     println!("  database:   {}", terminal_safe_path(&paths.db_file));
 
     match open_database(&paths.db_file) {
@@ -471,6 +475,10 @@ fn cmd_paths() {
     println!("config_dir: {}", terminal_safe_path(&paths.config_dir));
     println!("log_dir:    {}", terminal_safe_path(&paths.log_dir));
     println!("state:      {}", terminal_safe_path(&paths.state_file));
+    println!(
+        "theme:      {}",
+        terminal_safe_path(&paths.config_dir.join("theme.json"))
+    );
     println!("database:   {}", terminal_safe_path(&paths.db_file));
     println!("schema:     v{SCHEMA_VERSION}");
     // ensure state file can be created

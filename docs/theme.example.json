@@ -1,0 +1,14 @@
+{
+  "accent": "#4fd6ff",
+  "accent_alt": "#c792ea",
+  "text": "#c8d3f5",
+  "muted": "ansi:243",
+  "success": "#c3e88d",
+  "warning": "#ffc777",
+  "error": "#ff757f",
+  "bright": "white",
+  "selection_fg": "black",
+  "selection_bg": "#82aaff",
+  "selection_bold": true,
+  "muted_dim": true
+}

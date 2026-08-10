@@ -91,6 +91,20 @@ cargo run -p tz-playback --example rodio_smoke -- --startup-only
 cargo run -p tz-playback --example rodio_smoke -- path\to\track.flac
 ```
 
+## TUI themes
+
+Run `tz-player paths` to print the exact `theme.json` location, then copy
+[`theme.example.json`](theme.example.json) there. Every field is optional.
+Colors accept standard names (`cyan`, `dark_gray`, `light_magenta`, etc.),
+24-bit `#RRGGBB`, or indexed `ansi:0..255` values. `selection_bold` and
+`muted_dim` accept booleans; omitting them preserves each widget's built-in
+formatting. Unknown fields, invalid colors, malformed JSON, and files over 64
+KiB are rejected as a whole with a visible warning and the built-in fallback.
+
+This is presentation-only configuration loaded by `tz-tui`; it is not part of
+the player service or playback backend state. Restart the TUI after changing
+the file.
+
 ## TUI keys
 
 | Key | Action |

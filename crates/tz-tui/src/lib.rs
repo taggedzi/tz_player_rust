@@ -1,5 +1,6 @@
 //! Terminal UI frontend for tz-player (ratatui).
 
+mod theme;
 mod visualizers;
 
 use std::io::{self, stdout};
@@ -16,6 +17,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use ratatui::Terminal;
+use theme::TuiTheme;
 use tz_control::Command;
 use tz_core::{AppRuntime, EditorFocus, EditorOverlay};
 use tz_db::PlaylistSort;
@@ -23,6 +25,13 @@ use visualizers::{VisualizerFrameInput, VisualizerHost};
 
 /// Run the interactive TUI until quit.
 pub async fn run_tui(mut runtime: AppRuntime) -> Result<(), TuiError> {
+    let (theme, theme_notice) = TuiTheme::load(&runtime.paths.config_dir.join("theme.json"));
+    if let Some(notice) = theme_notice {
+        tracing::warn!("{notice}");
+        if runtime.status_level != tz_core::StatusLevel::Error {
+            runtime.set_warning(notice);
+        }
+    }
     enable_raw_mode().map_err(|e| TuiError::Io(e.to_string()))?;
     let mut out = stdout();
     execute!(out, EnterAlternateScreen).map_err(|e| TuiError::Io(e.to_string()))?;
@@ -33,7 +42,7 @@ pub async fn run_tui(mut runtime: AppRuntime) -> Result<(), TuiError> {
         .with_plugin_id(Some(&runtime.visualizer_id));
     runtime.set_visualizer_id(viz.active_id());
 
-    let result = ui_loop(&mut terminal, &mut runtime, &mut viz).await;
+    let result = ui_loop(&mut terminal, &mut runtime, &mut viz, &theme).await;
 
     disable_raw_mode().ok();
     execute!(terminal.backend_mut(), LeaveAlternateScreen).ok();
@@ -46,6 +55,7 @@ async fn ui_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     runtime: &mut AppRuntime,
     viz: &mut VisualizerHost,
+    theme: &TuiTheme,
 ) -> Result<(), TuiError> {
     let mut scroll_offset = 0usize;
     let mut browse_scroll_offset = 0usize;
@@ -144,6 +154,7 @@ async fn ui_loop(
             .draw(|f| {
                 if runtime.input_mode == "editor" {
                     draw_editor_screen(f, f.area(), runtime);
+                    theme.apply_buffer(f.buffer_mut());
                     return;
                 }
                 let root = Layout::default()
@@ -191,6 +202,7 @@ async fn ui_loop(
                 if runtime.input_mode == "browse" {
                     draw_browse_overlay(f, f.area(), runtime, &mut browse_scroll_offset);
                 }
+                theme.apply_buffer(f.buffer_mut());
             })
             .map_err(|e| TuiError::Io(e.to_string()))?;
 

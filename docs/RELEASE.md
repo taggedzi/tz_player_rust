@@ -27,6 +27,8 @@ Use this when cutting a local or public release of the `tz-player` binary.
 - [ ] Rodio output-device tests (muted; requires a usable default device):
       `$env:TZ_PLAYER_RODIO_OUTPUT_TESTS='1'; cargo test -p tz-playback rodio::tests --locked -- --test-threads=1; cargo test -p tz-core rodio_real_output --locked`
 - [ ] Manual smoke: add a track, play with VLC, cycle visualizers (`z`), quit, re-open (state restores)
+- [ ] Theme smoke: copy `docs/theme.example.json` to the `theme.json` path
+      reported by `tz-player paths`, verify palette/formatting, then remove it
 - [ ] Manual Rodio smoke with an explicit supported local file; verify pause,
       forward/backward seek, 0.5x/1x/2x/4x, stop, and natural next-track advance
 
@@ -81,6 +83,7 @@ Rust build uses identity **`tz-player-rs`** (separate from Python `tz-player`):
 |------|----------------------|
 | Database | `%LOCALAPPDATA%\taggedzi\tz-player-rs\data\tz-player.sqlite3` |
 | State | `%APPDATA%\taggedzi\tz-player-rs\config\state.json` |
+| Optional TUI theme | `%APPDATA%\taggedzi\tz-player-rs\config\theme.json` |
 | Logs | under data dir `logs/` |
 
 Exact paths: `tz-player paths`.

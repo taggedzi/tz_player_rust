@@ -133,5 +133,10 @@ All four done.
   and Album view orders while preserving selection and active find results.
   Sorting is deliberately non-destructive: playback/editor order remains the
   playlist's stored order, and main-view reordering requires Playlist mode.
-- Allow usage of some color/formatting in the TUI. It needs to be easily configurable, the config should not happen IN the player, but read from a config so people who want to make themes can. (this is a nice to have, a wanted nice to have)
+- [x] **Load configurable TUI colors and formatting outside the player.**
+  `tz-tui` reads the optional user-owned `theme.json`, remaps semantic colors,
+  and supports selection-bold / muted-dim overrides. Named, RGB, and ANSI
+  colors are validated under a 64 KiB limit; missing or invalid files safely
+  use the built-in theme with an actionable warning. Player and playback state
+  contain no theme configuration, and a documented example is included.
 - Addition of mouse support. the program MUST remain fully keyboard functional, but mouse functionality is a very strong desire.

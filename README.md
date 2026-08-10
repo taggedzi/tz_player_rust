@@ -54,6 +54,16 @@ Linux source builds need the ALSA development package used by Rodio/CPAL (for
 example, `sudo apt install libasound2-dev` on Ubuntu). Windows and macOS require
 no separately installed Rodio codec runtime.
 
+### Themes
+
+The TUI reads an optional `theme.json` from the config directory reported by
+`tz-player paths`. Copy [`docs/theme.example.json`](docs/theme.example.json) to
+that location and edit semantic colors with named values, `#RRGGBB`, or
+`ansi:0..255`. The same file can override selection bolding and dimmed muted
+text. Missing themes keep the built-in palette; invalid themes show a warning
+and safely fall back to it. Theme settings belong to `tz-tui` and never enter
+the playback/player configuration.
+
 Release binary:
 
 ```powershell
