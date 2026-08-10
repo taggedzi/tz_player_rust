@@ -115,6 +115,14 @@ All four done.
 - [x] **Dual-pane staged playlist editor** — implemented in `crates/tz-core`, `crates/tz-db`, and `crates/tz-tui` using the approved design in `docs/superpowers/specs/2026-08-09-dual-pane-playlist-editor-design.md`. `a` opens a full-screen files/playlist editor; edits use transient SQLite draft rows; F10/Ctrl+Enter applies after a successful stop; saved playlists support load/save-as/rename/delete with the active Default playlist protected. Recursive scans are iterative, deterministic, and skip symlink directories. Portable-media path rebasing remains a separate future feature.
 - All of the visualizations from the python version need to be ported. some already are, but the rest should be.
 - [x] Remove multi-select from the playlist-edit workflow; ordering and additions now happen in the staged editor. Existing legacy browse commands remain only for compatibility and are not used by the `a` path.
+- [ ] **Add and evaluate an experimental Rodio playback backend alongside VLC.**
+  Keep VLC as the default while `--backend rodio` is tested for transport parity,
+  common-format coverage, natural-end behavior, and cross-platform output. The
+  approved implementation must follow the
+  [design](superpowers/specs/2026-08-10-rodio-backend-design.md) and
+  [commit-by-task plan](superpowers/plans/2026-08-10-rodio-backend.md). Promotion
+  to default or removal of VLC is a separate decision based on the published
+  compatibility evaluation.
 
 ## Tier 4 — Nice to haves (do last)
 - (nice to have) add columns for Artist/album/track with sorting options.
