@@ -75,9 +75,10 @@ release-hardening phase.
   unmaintained advisory is explicitly linked to its owned, time-bounded
   exception. `Cargo.lock` remains committed, so vulnerable or disallowed
   dependency changes block pull requests.
-- [ ] **Pin GitHub Actions by immutable commit SHA.** Pin checkout, Rust
-  toolchain, and cache actions while retaining comments identifying their
-  release tags, and establish a periodic update process. **Done when:** CI no
+- [x] **Pin GitHub Actions by immutable commit SHA.** Checkout, Rust toolchain,
+  and Rust cache references use full upstream commit SHAs with adjacent release
+  identifiers. The workflow grants only read access to repository contents,
+  and weekly Dependabot updates provide the reviewable update process. CI no
   longer executes mutable action tags.
 - [ ] **Document runtime trust boundaries.** State that FFmpeg is resolved
   through `PATH` and LibVLC is loaded dynamically; recommend trusted
