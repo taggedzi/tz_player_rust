@@ -29,6 +29,8 @@ Use this when cutting a local or public release of the `tz-player` binary.
 - [ ] Manual smoke: add a track, play with VLC, cycle visualizers (`z`), quit, re-open (state restores)
 - [ ] Theme smoke: copy `docs/theme.example.json` to the `theme.json` path
       reported by `tz-player paths`, verify palette/formatting, then remove it
+- [ ] Mouse smoke: click/select and double-click/play a row, wheel both main
+      and editor lists, drag time/volume/speed, then repeat via keyboard
 - [ ] Manual Rodio smoke with an explicit supported local file; verify pause,
       forward/backward seek, 0.5x/1x/2x/4x, stop, and natural next-track advance
 

@@ -135,11 +135,18 @@ the file.
 | `i` | About / version info |
 | `?` | Help (full-screen key reference) |
 | `q` | Quit (persists state) |
+| Left click / double-click | Select a playlist/editor row / play a playlist track |
+| Mouse wheel | Move three rows in the playlist or focused editor pane |
+| Click or left-drag transport | Seek; set volume; set speed |
 
 The playlist shows Track, Artist, and Album as aligned columns. `o` changes
 only the displayed order and preserves the selected item; playback order and
 the staged playlist remain unchanged. Switch back to Playlist order before
 using the main-view `Shift+Up` / `Shift+Down` reorder shortcut.
+
+Mouse reporting is enabled when the alternate-screen TUI starts and disabled
+again on exit. Mouse support is additive: the complete keyboard map above is
+still available, including every action exposed by a click, wheel, or drag.
 
 ## Visualizers (`z` cycles all built-ins)
 

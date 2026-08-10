@@ -12,7 +12,7 @@ Last updated: 2026-08-10
 | 1 DB + state | **Done** | Schema v8, FTS5, `PlaylistStore`, transient editor drafts, `AppState` |
 | 2 Playback | **Done + evaluated experiment** | Fake + VLC dynamic libVLC FFI; opt-in Rodio/Symphonia/CPAL passed the compatibility matrix and remains experimental |
 | 3 Control API | **Done** | Structured `Command` + `AppRuntime` |
-| 4 TUI | **Done** | metadata columns/sorting, external semantic themes, transport, visualizers, find, staged editor, help |
+| 4 TUI | **Done** | metadata sorting, external themes, additive mouse controls, transport, visualizers, staged editor, help |
 | 5 Metadata | **Done** | lofty tags + embedded cover for Cover ASCII |
 | 6 Analysis | **Done** | Envelope + spectrum + beat + waveform-proxy caches via `LevelService` |
 | 7 Visualizers | **Done (full built-in pack)** | 26 plugins: spectrum, matrix×3, waveform×2, hackscope, typography, cover×2, particle pack×11 |
@@ -46,6 +46,7 @@ cargo run -p tz-player -- --backend rodio doctor
 | `i` | About / version info |
 | `?` | Help (full-screen key reference) |
 | `q` | Quit |
+| Mouse | Select/play rows, wheel lists, drag transport controls |
 
 Envelope / spectrum / beat / waveform-proxy caches fill on play/add. Transport shows `analysis:ESBW` when caches are warm.
 

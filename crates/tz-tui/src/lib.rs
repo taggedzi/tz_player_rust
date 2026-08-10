@@ -4,9 +4,12 @@ mod theme;
 mod visualizers;
 
 use std::io::{self, stdout};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    MouseButton, MouseEvent, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -34,7 +37,8 @@ pub async fn run_tui(mut runtime: AppRuntime) -> Result<(), TuiError> {
     }
     enable_raw_mode().map_err(|e| TuiError::Io(e.to_string()))?;
     let mut out = stdout();
-    execute!(out, EnterAlternateScreen).map_err(|e| TuiError::Io(e.to_string()))?;
+    execute!(out, EnterAlternateScreen, EnableMouseCapture)
+        .map_err(|e| TuiError::Io(e.to_string()))?;
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend).map_err(|e| TuiError::Io(e.to_string()))?;
 
@@ -45,7 +49,12 @@ pub async fn run_tui(mut runtime: AppRuntime) -> Result<(), TuiError> {
     let result = ui_loop(&mut terminal, &mut runtime, &mut viz, &theme).await;
 
     disable_raw_mode().ok();
-    execute!(terminal.backend_mut(), LeaveAlternateScreen).ok();
+    execute!(
+        terminal.backend_mut(),
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    )
+    .ok();
     terminal.show_cursor().ok();
     runtime.persist().await;
     result
@@ -60,6 +69,7 @@ async fn ui_loop(
     let mut scroll_offset = 0usize;
     let mut browse_scroll_offset = 0usize;
     let mut editor_was_active = runtime.input_mode == "editor";
+    let mut mouse_state = MouseState::default();
 
     loop {
         runtime.tick().await;
@@ -106,7 +116,10 @@ async fn ui_loop(
                 Constraint::Length(2),
             ])
             .split(area);
-        let (_, viz_panel) = main_layout(layout_root[1], runtime.visualizer_hidden);
+        let header_area = layout_root[0];
+        let (playlist_panel, viz_panel) = main_layout(layout_root[1], runtime.visualizer_hidden);
+        let transport_area = layout_root[2];
+        let footer_area = layout_root[3];
         // Frozen (not ticking) while hidden: skipping render() avoids
         // spending CPU animating something invisible, and since the host
         // itself isn't torn down, showing it again resumes instantly rather
@@ -157,22 +170,10 @@ async fn ui_loop(
                     theme.apply_buffer(f.buffer_mut());
                     return;
                 }
-                let root = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Length(3), // header
-                        Constraint::Min(5),    // main: playlist | visualizer
-                        Constraint::Length(5), // three-row transport + borders
-                        Constraint::Length(2), // footer
-                    ])
-                    .split(f.area());
-
-                let (playlist_area, viz_area) = main_layout(root[1], runtime.visualizer_hidden);
-
-                draw_header(f, root[0], &snap, viz.active_name());
+                draw_header(f, header_area, &snap, viz.active_name());
                 draw_playlist(
                     f,
-                    playlist_area,
+                    playlist_panel,
                     &rows,
                     PlaylistView {
                         cursor_index: runtime.cursor_index,
@@ -183,13 +184,13 @@ async fn ui_loop(
                         sort: runtime.playlist_sort,
                     },
                 );
-                if let Some(viz_area) = viz_area {
+                if let Some(viz_area) = viz_panel {
                     draw_visualizer(f, viz_area, &viz_lines, viz.active_name());
                 }
-                draw_transport(f, root[2], &snap);
+                draw_transport(f, transport_area, &snap);
                 draw_footer(
                     f,
-                    root[3],
+                    footer_area,
                     runtime.status_message.as_deref(),
                     runtime.status_level,
                     &runtime.input_mode,
@@ -207,13 +208,31 @@ async fn ui_loop(
             .map_err(|e| TuiError::Io(e.to_string()))?;
 
         if event::poll(Duration::from_millis(80)).map_err(|e| TuiError::Io(e.to_string()))? {
-            if let Event::Key(key) = event::read().map_err(|e| TuiError::Io(e.to_string()))? {
-                if key.kind != KeyEventKind::Press {
-                    continue;
+            match event::read().map_err(|e| TuiError::Io(e.to_string()))? {
+                Event::Key(key) => {
+                    if key.kind != KeyEventKind::Press {
+                        continue;
+                    }
+                    if handle_key(runtime, viz, key.code, key.modifiers).await? {
+                        break;
+                    }
                 }
-                if handle_key(runtime, viz, key.code, key.modifiers).await? {
-                    break;
+                Event::Mouse(mouse) => {
+                    handle_mouse(
+                        runtime,
+                        mouse,
+                        MouseAreas {
+                            screen: area,
+                            playlist: playlist_panel,
+                            transport: transport_area,
+                        },
+                        scroll_offset,
+                        &snap,
+                        &mut mouse_state,
+                    )
+                    .await;
                 }
+                _ => {}
             }
         }
 
@@ -226,6 +245,241 @@ async fn ui_loop(
 
 fn editor_transitioned(was_active: bool, input_mode: &str) -> bool {
     was_active != (input_mode == "editor")
+}
+
+#[derive(Debug, Default)]
+struct MouseState {
+    last_playlist_click: Option<(usize, Instant)>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MouseAreas {
+    screen: Rect,
+    playlist: Rect,
+    transport: Rect,
+}
+
+async fn handle_mouse(
+    runtime: &mut AppRuntime,
+    mouse: MouseEvent,
+    areas: MouseAreas,
+    scroll_offset: usize,
+    snapshot: &tz_control::TransportSnapshot,
+    state: &mut MouseState,
+) {
+    if runtime.input_mode == "help" {
+        state.last_playlist_click = None;
+        return;
+    }
+    if runtime.input_mode == "editor" {
+        state.last_playlist_click = None;
+        handle_editor_mouse(runtime, mouse, areas.screen);
+        return;
+    }
+    if runtime.input_mode != "normal" {
+        state.last_playlist_click = None;
+        return;
+    }
+
+    if rect_contains(areas.playlist, mouse.column, mouse.row) {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                state.last_playlist_click = None;
+                runtime.cursor_index = runtime.cursor_index.saturating_sub(3);
+            }
+            MouseEventKind::ScrollDown => {
+                state.last_playlist_click = None;
+                let count = runtime.playlist_count();
+                if count > 0 {
+                    runtime.cursor_index = (runtime.cursor_index + 3).min(count - 1);
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                let first_row = areas.playlist.y.saturating_add(1);
+                let last_row = areas
+                    .playlist
+                    .y
+                    .saturating_add(areas.playlist.height.saturating_sub(1));
+                if mouse.row >= first_row && mouse.row < last_row {
+                    let index = scroll_offset + usize::from(mouse.row - first_row);
+                    if index < runtime.playlist_count() {
+                        let is_double_click =
+                            state.last_playlist_click.is_some_and(|(previous, at)| {
+                                previous == index && at.elapsed() <= Duration::from_millis(500)
+                            });
+                        runtime.cursor_index = index;
+                        state.last_playlist_click = Some((index, Instant::now()));
+                        if is_double_click {
+                            let _ = runtime.handle(Command::PlayCursor).await;
+                            state.last_playlist_click = None;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    state.last_playlist_click = None;
+    if let Some(command) = transport_mouse_command(mouse, areas.transport, snapshot) {
+        let _ = runtime.handle(command).await;
+    }
+}
+
+fn handle_editor_mouse(runtime: &mut AppRuntime, mouse: MouseEvent, screen: Rect) {
+    if runtime.editor_overlay != EditorOverlay::None {
+        return;
+    }
+    let editor = editor_layout(screen);
+    let files = editor.files;
+    let playlist = editor.playlist;
+    let over_files = rect_contains(files, mouse.column, mouse.row);
+    let over_playlist = rect_contains(playlist, mouse.column, mouse.row);
+    match mouse.kind {
+        MouseEventKind::ScrollUp if over_files => {
+            runtime.editor_focus = EditorFocus::Files;
+            runtime.browse_cursor = runtime.browse_cursor.saturating_sub(3);
+        }
+        MouseEventKind::ScrollDown if over_files => {
+            runtime.editor_focus = EditorFocus::Files;
+            if !runtime.browse_entries.is_empty() {
+                runtime.browse_cursor =
+                    (runtime.browse_cursor + 3).min(runtime.browse_entries.len() - 1);
+            }
+        }
+        MouseEventKind::ScrollUp if over_playlist => {
+            runtime.editor_focus = EditorFocus::Playlist;
+            runtime.editor_playlist_cursor = runtime.editor_playlist_cursor.saturating_sub(3);
+        }
+        MouseEventKind::ScrollDown if over_playlist => {
+            runtime.editor_focus = EditorFocus::Playlist;
+            let count = runtime.editor_draft_count().unwrap_or(0);
+            if count > 0 {
+                runtime.editor_playlist_cursor =
+                    (runtime.editor_playlist_cursor + 3).min(count - 1);
+            }
+        }
+        MouseEventKind::Down(MouseButton::Left) if over_files => {
+            runtime.editor_focus = EditorFocus::Files;
+            let visible = files.height.saturating_sub(2).max(1) as usize;
+            let start = runtime
+                .browse_cursor
+                .saturating_sub(visible.saturating_sub(1));
+            if let Some(index) = mouse_list_index(mouse.row, files, start) {
+                if index < runtime.browse_entries.len() {
+                    runtime.browse_cursor = index;
+                }
+            }
+        }
+        MouseEventKind::Down(MouseButton::Left) if over_playlist => {
+            runtime.editor_focus = EditorFocus::Playlist;
+            let visible = playlist.height.saturating_sub(2).max(1) as usize;
+            let start = runtime
+                .editor_playlist_cursor
+                .saturating_sub(visible.saturating_sub(1));
+            if let Some(index) = mouse_list_index(mouse.row, playlist, start) {
+                let count = runtime.editor_draft_count().unwrap_or(0);
+                if index < count {
+                    runtime.editor_playlist_cursor = index;
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn mouse_list_index(row: u16, area: Rect, offset: usize) -> Option<usize> {
+    let first = area.y.checked_add(1)?;
+    let last = area.y.checked_add(area.height.saturating_sub(1))?;
+    (row >= first && row < last).then(|| offset + usize::from(row - first))
+}
+
+fn transport_mouse_command(
+    mouse: MouseEvent,
+    area: Rect,
+    snapshot: &tz_control::TransportSnapshot,
+) -> Option<Command> {
+    if !matches!(
+        mouse.kind,
+        MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Drag(MouseButton::Left)
+    ) {
+        return None;
+    }
+    let controls = transport_control_areas(area)?;
+    if rect_contains(controls.time, mouse.column, mouse.row) && snapshot.duration_ms > 0 {
+        return Some(Command::Seek {
+            position_ms: (ratio_at(mouse.column, controls.time) * snapshot.duration_ms as f64)
+                .round() as u64,
+        });
+    }
+    if rect_contains(controls.volume, mouse.column, mouse.row) {
+        return Some(Command::SetVolume {
+            volume: (ratio_at(mouse.column, controls.volume) * 100.0).round() as u8,
+        });
+    }
+    if rect_contains(controls.speed, mouse.column, mouse.row) {
+        return Some(Command::SetSpeed {
+            speed: 0.5 + ratio_at(mouse.column, controls.speed) * 3.5,
+        });
+    }
+    None
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TransportControlAreas {
+    time: Rect,
+    volume: Rect,
+    speed: Rect,
+    status: Rect,
+}
+
+fn transport_control_areas(area: Rect) -> Option<TransportControlAreas> {
+    if area.width < 4 || area.height < 4 {
+        return None;
+    }
+    let inner = Rect::new(
+        area.x + 1,
+        area.y + 1,
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+    let halves = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(rows[1]);
+    let volume = Rect {
+        width: halves[0].width.saturating_sub(1),
+        ..halves[0]
+    };
+    Some(TransportControlAreas {
+        time: rows[0],
+        volume,
+        speed: halves[1],
+        status: rows[2],
+    })
+}
+
+fn ratio_at(column: u16, area: Rect) -> f64 {
+    if area.width <= 1 {
+        return 0.0;
+    }
+    f64::from(column.saturating_sub(area.x).min(area.width - 1)) / f64::from(area.width - 1)
+}
+
+fn rect_contains(area: Rect, column: u16, row: u16) -> bool {
+    column >= area.x
+        && column < area.x.saturating_add(area.width)
+        && row >= area.y
+        && row < area.y.saturating_add(area.height)
 }
 
 /// Split the main row into (playlist, visualizer) areas. Returns `None` for
@@ -241,6 +495,35 @@ fn main_layout(area: Rect, visualizer_hidden: bool) -> (Rect, Option<Rect>) {
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
     (cols[0], Some(cols[1]))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EditorLayout {
+    header: Rect,
+    files: Rect,
+    playlist: Rect,
+    footer: Rect,
+}
+
+fn editor_layout(area: Rect) -> EditorLayout {
+    let root = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Min(4),
+            Constraint::Length(2),
+        ])
+        .split(area);
+    let panes = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
+        .split(root[1]);
+    EditorLayout {
+        header: root[0],
+        files: panes[0],
+        playlist: panes[1],
+        footer: root[2],
+    }
 }
 
 fn draw_header(
@@ -459,14 +742,9 @@ fn draw_transport(f: &mut ratatui::Frame<'_>, area: Rect, snap: &tz_control::Tra
         return;
     }
 
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .split(inner);
+    let Some(controls) = transport_control_areas(area) else {
+        return;
+    };
 
     let position = format_time(snap.position_ms);
     let duration = format_time(snap.duration_ms);
@@ -481,31 +759,21 @@ fn draw_transport(f: &mut ratatui::Frame<'_>, area: Rect, snap: &tz_control::Tra
             "TIME",
             time_value,
             time_ratio,
-            rows[0].width,
+            controls.time.width,
             Color::Cyan,
         )),
-        rows[0],
+        controls.time,
     );
 
-    // Keep these as independent rectangles: future mouse handling can map
-    // clicks directly to volume and speed without reworking transport layout.
-    let controls = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(rows[1]);
-    let volume_area = Rect {
-        width: controls[0].width.saturating_sub(1),
-        ..controls[0]
-    };
     f.render_widget(
         Paragraph::new(slider_line(
             "VOL",
             format!("{}%", snap.volume),
             f64::from(snap.volume) / 100.0,
-            volume_area.width,
+            controls.volume.width,
             Color::Green,
         )),
-        volume_area,
+        controls.volume,
     );
     let speed_ratio = ((snap.speed - 0.5) / (4.0 - 0.5)).clamp(0.0, 1.0);
     f.render_widget(
@@ -513,15 +781,15 @@ fn draw_transport(f: &mut ratatui::Frame<'_>, area: Rect, snap: &tz_control::Tra
             "SPD",
             format!("{:.2}x", snap.speed),
             speed_ratio,
-            controls[1].width,
+            controls.speed.width,
             Color::Cyan,
         )),
-        controls[1],
+        controls.speed,
     );
 
     f.render_widget(
-        Paragraph::new(transport_status_line(snap, rows[2].width)),
-        rows[2],
+        Paragraph::new(transport_status_line(snap, controls.status.width)),
+        controls.status,
     );
 }
 
@@ -764,7 +1032,12 @@ fn help_lines() -> Vec<Line<'static>> {
         ),
         section("View"),
         e2("z", "Cycle visualizer", "i", "About / version"),
-        e1("Shift+Z", "Hide/show visualizer pane"),
+        e2(
+            "Shift+Z",
+            "Hide/show visualizer",
+            "Mouse",
+            "Select / control",
+        ),
         Line::from(Span::styled(
             "Esc / q / any key - close",
             Style::default()
@@ -796,29 +1069,18 @@ fn draw_editor_screen(f: &mut ratatui::Frame<'_>, area: Rect, runtime: &AppRunti
     // Clear every cell first so sparse lists cannot leave playlist/visualizer
     // glyphs from the previous frame visible in their unused rows.
     f.render_widget(Clear, area);
-    let root = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(2),
-            Constraint::Min(4),
-            Constraint::Length(2),
-        ])
-        .split(area);
+    let layout = editor_layout(area);
     f.render_widget(
         Paragraph::new(" Playlist editor  |  Tab: switch pane  F10: Apply  Esc: cancel"),
-        root[0],
+        layout.header,
     );
-    let panes = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
-        .split(root[1]);
 
     let left_title = runtime
         .browse_dir
         .as_ref()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "Drives".into());
-    let left_visible = panes[0].height.saturating_sub(2).max(1) as usize;
+    let left_visible = layout.files.height.saturating_sub(2).max(1) as usize;
     let left_start = runtime
         .browse_cursor
         .saturating_sub(left_visible.saturating_sub(1));
@@ -848,11 +1110,11 @@ fn draw_editor_screen(f: &mut ratatui::Frame<'_>, area: Rect, runtime: &AppRunti
                 .borders(Borders::ALL)
                 .title(format!(" Files — {left_title} ")),
         ),
-        panes[0],
+        layout.files,
     );
 
     let count = runtime.editor_draft_count().unwrap_or(0);
-    let right_visible = panes[1].height.saturating_sub(2).max(1) as usize;
+    let right_visible = layout.playlist.height.saturating_sub(2).max(1) as usize;
     let right_start = runtime
         .editor_playlist_cursor
         .saturating_sub(right_visible.saturating_sub(1));
@@ -892,7 +1154,7 @@ fn draw_editor_screen(f: &mut ratatui::Frame<'_>, area: Rect, runtime: &AppRunti
                 .borders(Borders::ALL)
                 .title(format!(" Staged playlist ({count}) ")),
         ),
-        panes[1],
+        layout.playlist,
     );
     let footer = match runtime.editor_overlay {
         EditorOverlay::SaveName | EditorOverlay::Rename => format!("Name: {}", runtime.input_buffer),
@@ -903,7 +1165,7 @@ fn draw_editor_screen(f: &mut ratatui::Frame<'_>, area: Rect, runtime: &AppRunti
     };
     f.render_widget(
         Paragraph::new(footer).block(Block::default().borders(Borders::TOP)),
-        root[2],
+        layout.footer,
     );
     if runtime.editor_overlay == EditorOverlay::Help {
         draw_help_overlay(f, area);
@@ -1553,6 +1815,7 @@ mod tests {
             "Cycle visualizer",
             "About",
             "Hide/show visualizer",
+            "Mouse",
             "Esc / q / any key",
         ] {
             assert!(
@@ -2031,6 +2294,162 @@ mod tests {
 
         assert_eq!(runtime.playlist_sort, PlaylistSort::Track);
         assert_eq!(runtime.app_state.playlist_sort, "track");
+        let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
+    }
+
+    fn mouse_event(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn transport_mouse_hitboxes_cover_seek_volume_and_speed() {
+        let area = Rect::new(0, 10, 100, 5);
+        let controls = transport_control_areas(area).unwrap();
+        let snapshot = tz_control::TransportSnapshot {
+            duration_ms: 10_000,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            transport_mouse_command(
+                mouse_event(
+                    MouseEventKind::Down(MouseButton::Left),
+                    controls.time.x + controls.time.width - 1,
+                    controls.time.y,
+                ),
+                area,
+                &snapshot,
+            ),
+            Some(Command::Seek {
+                position_ms: 10_000
+            })
+        );
+        assert_eq!(
+            transport_mouse_command(
+                mouse_event(
+                    MouseEventKind::Drag(MouseButton::Left),
+                    controls.volume.x,
+                    controls.volume.y,
+                ),
+                area,
+                &snapshot,
+            ),
+            Some(Command::SetVolume { volume: 0 })
+        );
+        assert_eq!(
+            transport_mouse_command(
+                mouse_event(
+                    MouseEventKind::Down(MouseButton::Left),
+                    controls.speed.x + controls.speed.width - 1,
+                    controls.speed.y,
+                ),
+                area,
+                &snapshot,
+            ),
+            Some(Command::SetSpeed { speed: 4.0 })
+        );
+    }
+
+    #[tokio::test]
+    async fn mouse_selects_scrolls_and_double_clicks_playlist_rows() {
+        let mut runtime = find_test_runtime("mouse_playlist").await;
+        let areas = MouseAreas {
+            screen: Rect::new(0, 0, 80, 24),
+            playlist: Rect::new(0, 3, 40, 11),
+            transport: Rect::new(0, 14, 80, 5),
+        };
+        let click_second = mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 5);
+        let snapshot = runtime.snapshot().await;
+        let mut mouse_state = MouseState::default();
+
+        handle_mouse(
+            &mut runtime,
+            click_second,
+            areas,
+            0,
+            &snapshot,
+            &mut mouse_state,
+        )
+        .await;
+        assert_eq!(runtime.cursor_index, 1);
+        let selected_id = runtime.cursor_item_id();
+
+        handle_mouse(
+            &mut runtime,
+            click_second,
+            areas,
+            0,
+            &snapshot,
+            &mut mouse_state,
+        )
+        .await;
+        let playing = runtime.snapshot().await;
+        assert_eq!(playing.item_id, selected_id);
+        assert_eq!(playing.status, "playing");
+
+        handle_mouse(
+            &mut runtime,
+            mouse_event(MouseEventKind::ScrollDown, 10, 5),
+            areas,
+            0,
+            &playing,
+            &mut mouse_state,
+        )
+        .await;
+        assert_eq!(runtime.cursor_index, 2);
+
+        runtime.player.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
+    }
+
+    #[tokio::test]
+    async fn mouse_selects_and_scrolls_both_editor_panes() {
+        let mut runtime = find_test_runtime("mouse_editor").await;
+        runtime.handle(Command::EditorOpen).await.unwrap();
+        let screen = Rect::new(0, 0, 80, 16);
+        let layout = editor_layout(screen);
+
+        handle_editor_mouse(
+            &mut runtime,
+            mouse_event(
+                MouseEventKind::Down(MouseButton::Left),
+                layout.playlist.x + 2,
+                layout.playlist.y + 2,
+            ),
+            screen,
+        );
+        assert_eq!(runtime.editor_focus, EditorFocus::Playlist);
+        assert_eq!(runtime.editor_playlist_cursor, 1);
+
+        handle_editor_mouse(
+            &mut runtime,
+            mouse_event(
+                MouseEventKind::ScrollUp,
+                layout.playlist.x + 2,
+                layout.playlist.y + 2,
+            ),
+            screen,
+        );
+        assert_eq!(runtime.editor_playlist_cursor, 0);
+
+        handle_editor_mouse(
+            &mut runtime,
+            mouse_event(
+                MouseEventKind::Down(MouseButton::Left),
+                layout.files.x + 2,
+                layout.files.y + 1,
+            ),
+            screen,
+        );
+        assert_eq!(runtime.editor_focus, EditorFocus::Files);
+
+        runtime.handle(Command::EditorCancel).await.unwrap();
+        runtime.player.shutdown().await.unwrap();
         let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
     }
 }

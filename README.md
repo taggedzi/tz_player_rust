@@ -98,12 +98,18 @@ cargo build --release -p tz-player
 | i | About / version info |
 | ? | Help (full-screen key reference) |
 | q | Quit |
+| Mouse | Click to select, double-click a track to play, wheel to navigate, click/drag transport sliders |
 
 Full reference: [`docs/usage.md`](docs/usage.md).
 
 Playlist rows expose aligned Track, Artist, and Album columns. Sorting is a
 persisted view preference only; it never rewrites the staged playlist or the
 order used by Next/Previous.
+
+Mouse capture is enabled only while the TUI is open. Playlist and editor panes
+accept clicks and wheel navigation; the time, volume, and speed rows accept
+clicks or left-button drags. Every mouse operation retains a documented
+keyboard equivalent, so keyboard-only use remains complete.
 
 ## Workspace
 

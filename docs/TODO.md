@@ -139,4 +139,9 @@ All four done.
   colors are validated under a 64 KiB limit; missing or invalid files safely
   use the built-in theme with an actionable warning. Player and playback state
   contain no theme configuration, and a documented example is included.
-- Addition of mouse support. the program MUST remain fully keyboard functional, but mouse functionality is a very strong desire.
+- [x] **Add mouse support while retaining complete keyboard operation.** Mouse
+  capture is scoped to the alternate-screen TUI. Clicks select playlist and
+  editor rows, a playlist double-click plays, wheels move three rows, and
+  click/drag controls seek, volume, and speed through the same structured
+  commands as the keyboard. Capture is disabled on exit, hitboxes share the
+  render layouts, and the full keyboard map remains documented and tested.
