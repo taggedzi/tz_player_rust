@@ -453,27 +453,6 @@ fn normalize_transport_snapshot(
     (position_ms, duration_ms, map_vlc_state(state))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ended_snapshot_reaches_duration_when_vlc_clock_is_short() {
-        assert_eq!(
-            normalize_transport_snapshot(LibVlcState::Ended, 179_720, 180_000),
-            (180_000, 180_000, BackendStatus::Stopped)
-        );
-    }
-
-    #[test]
-    fn explicit_stop_preserves_position_and_cannot_look_like_natural_end() {
-        assert_eq!(
-            normalize_transport_snapshot(LibVlcState::Stopped, 42_000, 180_000),
-            (42_000, 180_000, BackendStatus::Stopped)
-        );
-    }
-}
-
 fn path_to_file_uri(path: &str) -> String {
     let p = Path::new(path);
     let abs = if p.is_absolute() {
@@ -500,4 +479,25 @@ fn cstr_lossy(p: *const i8) -> String {
         return String::new();
     }
     unsafe { CStr::from_ptr(p).to_string_lossy().into_owned() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ended_snapshot_reaches_duration_when_vlc_clock_is_short() {
+        assert_eq!(
+            normalize_transport_snapshot(LibVlcState::Ended, 179_720, 180_000),
+            (180_000, 180_000, BackendStatus::Stopped)
+        );
+    }
+
+    #[test]
+    fn explicit_stop_preserves_position_and_cannot_look_like_natural_end() {
+        assert_eq!(
+            normalize_transport_snapshot(LibVlcState::Stopped, 42_000, 180_000),
+            (42_000, 180_000, BackendStatus::Stopped)
+        );
+    }
 }

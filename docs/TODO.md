@@ -61,9 +61,9 @@ release-hardening phase.
   in `docs/SECURITY.md` as an accepted build-time risk owned by the repository
   maintainer and expiring 2026-11-08. `Cargo.lock` pins the version and the
   dependency path is now Lofty-only.
-- [ ] **Restore the documented Clippy gate.** Move helper functions before the
-  test module in `vlc_engine.rs`, and resolve or intentionally allow the
-  visualizer's `too_many_arguments` warning. **Done when:**
+- [x] **Restore the documented Clippy gate.** The VLC tests now follow all
+  helper functions, and the waveform visualizer passes its rendering inputs in
+  a focused parameter object rather than suppressing `too_many_arguments`.
   `cargo clippy --workspace --all-targets -- -D warnings` succeeds.
 
 ### Security Tier 3 — Supply-chain and operational controls
