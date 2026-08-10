@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! cargo run -p tz-playback --example vlc_smoke
+//! cargo run -p tz-playback --example vlc_smoke -- --startup-only
 //! ```
 
 use std::f32::consts::PI;
@@ -38,24 +39,31 @@ fn write_sine_wav(path: &std::path::Path, seconds: f32, freq: f32) {
 }
 
 fn main() {
+    let startup_only = std::env::args_os().any(|argument| argument == "--startup-only");
     configure_vlc_environment();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .expect("async runtime");
-    runtime.block_on(run());
+    runtime.block_on(run(startup_only));
 }
 
-async fn run() {
+async fn run(startup_only: bool) {
+    let mut backend = VlcPlaybackBackend::new();
+    println!("discovery usable={}", backend.discovery().is_usable());
+    backend.start().await.expect("start");
+    if startup_only {
+        backend.shutdown().await.expect("shutdown");
+        println!("startup OK");
+        return;
+    }
+
     let dir = std::env::temp_dir().join("tz_vlc_smoke");
     std::fs::create_dir_all(&dir).unwrap();
     let wav = dir.join("beep.wav");
     write_sine_wav(&wav, 1.5, 440.0);
     println!("wav={}", wav.display());
 
-    let mut backend = VlcPlaybackBackend::new();
-    println!("discovery usable={}", backend.discovery().is_usable());
-    backend.start().await.expect("start");
     backend.set_volume(40).await.expect("vol");
     backend
         .play(1, wav.to_str().unwrap(), 0, Some(1500))

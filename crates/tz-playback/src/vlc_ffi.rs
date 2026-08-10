@@ -136,15 +136,20 @@ impl LibVlcApi {
 
         let lib_path = lib_dir.join(lib_name);
         if !lib_path.is_file() {
+            #[cfg(windows)]
+            return Err(format!(
+                "expected LibVLC library was not found at {}",
+                lib_path.display()
+            ));
+
+            #[cfg(not(windows))]
             let lib = Library::new(lib_name)
                 .map_err(|error| format!("failed to load {lib_name}: {error}"))?;
+            #[cfg(not(windows))]
             return Self::from_library(lib);
         }
 
-        #[cfg(windows)]
-        prepend_dll_directory(lib_dir);
-
-        let lib = Library::new(&lib_path)
+        let lib = load_vlc_library(&lib_path)
             .map_err(|error| format!("failed to load {}: {error}", lib_path.display()))?;
         Self::from_library(lib)
     }
@@ -259,23 +264,25 @@ fn classify_libvlc_version(version: &str) -> Result<LibVlcAbi, String> {
 }
 
 #[cfg(windows)]
-fn prepend_dll_directory(dir: &Path) {
-    use std::os::windows::ffi::OsStrExt;
+fn windows_vlc_load_flags() -> u32 {
+    use libloading::os::windows::{LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, LOAD_LIBRARY_SEARCH_SYSTEM32};
 
-    let wide: Vec<u16> = dir
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    unsafe {
-        if let Ok(kernel32) = Library::new("kernel32.dll") {
-            type AddDllDirectory = unsafe extern "system" fn(*const u16) -> *mut c_void;
-            if let Ok(function) = kernel32.get::<AddDllDirectory>(b"AddDllDirectory\0") {
-                let _ = function(wide.as_ptr());
-            }
-            std::mem::forget(kernel32);
-        }
-    }
+    // Resolve libvlccore.dll and the other VLC runtime dependencies beside
+    // libvlc.dll for this load only. This avoids both process-global PATH
+    // mutation and the ineffective AddDllDirectory-without-search-flags path.
+    LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32
+}
+
+#[cfg(windows)]
+unsafe fn load_vlc_library(path: &Path) -> Result<Library, libloading::Error> {
+    use libloading::os::windows::Library as WindowsLibrary;
+
+    WindowsLibrary::load_with_flags(path, windows_vlc_load_flags()).map(Into::into)
+}
+
+#[cfg(not(windows))]
+unsafe fn load_vlc_library(path: &Path) -> Result<Library, libloading::Error> {
+    Library::new(path)
 }
 
 #[cfg(test)]
@@ -297,6 +304,18 @@ mod tests {
         assert!(vlc4.contains("unsupported LibVLC major version 4"));
         assert!(classify_libvlc_version("nightly").is_err());
         assert!(classify_libvlc_version("").is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_load_is_scoped_to_vlc_and_system32() {
+        use libloading::os::windows::{
+            LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, LOAD_LIBRARY_SEARCH_SYSTEM32,
+        };
+
+        let flags = windows_vlc_load_flags();
+        assert_ne!(flags & LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, 0);
+        assert_ne!(flags & LOAD_LIBRARY_SEARCH_SYSTEM32, 0);
     }
 
     #[test]

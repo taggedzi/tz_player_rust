@@ -17,6 +17,8 @@ Use this when cutting a local or public release of the `tz-player` binary.
       `cargo test -p tz-core metadata::tests`, and
       `cargo test -p tz-tui cover_ascii::tests`
 - [ ] Manual smoke: `cargo run -p tz-player -- doctor`
+- [ ] Windows VLC loader smoke (no audio):
+      `cargo run -p tz-playback --example vlc_smoke -- --startup-only`
 - [ ] Manual smoke: add a track, play with VLC, cycle visualizers (`z`), quit, re-open (state restores)
 
 ## Build
