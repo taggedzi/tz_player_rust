@@ -31,6 +31,11 @@ tz-player paths
 tz-player --version
 ```
 
+All plain CLI output treats filenames and metadata as untrusted. C0/C1
+terminal controls (including ANSI/OSC ESC and BEL), embedded CR/LF, and Unicode
+directional controls are printed as visible `\\xNN` / `\\u{NNNN}` escapes.
+They cannot alter terminal state or visually reorder surrounding diagnostics.
+
 Build from source:
 
 ```powershell

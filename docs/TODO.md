@@ -35,12 +35,11 @@ release-hardening phase.
   has a cumulative 32 MiB read budget and rejects more than 16 MiB of picture
   payload. Pictures over 8 MiB are skipped before image parsing, and strict
   4096x4096 / 32 MiB decoder limits are tested before the 160px resize.
-- [ ] **Sanitize plain terminal output.** Introduce a shared terminal-safe
-  display function that strips or visibly escapes C0/C1 controls, ESC, CR/LF,
-  and problematic directional controls. Apply it to `tz-player list`,
-  diagnostic messages containing filenames, and other non-Ratatui output. Add
-  tests containing ANSI, OSC, newline, and bidi-control payloads. **Done when:**
-  metadata and filenames cannot emit terminal control sequences.
+- [x] **Sanitize plain terminal output.** Shared `terminal_safe` /
+  `terminal_safe_path` helpers visibly escape C0/C1 controls, ESC/BEL, CR/LF,
+  line separators, and directional controls. Playlist metadata, CLI errors,
+  diagnostic paths/notes, log setup failures, and terminal-facing tracing use
+  them. ANSI, OSC, newline, C1 CSI, and bidi payloads have regression tests.
 
 ### Security Tier 2 — Security hardening
 
