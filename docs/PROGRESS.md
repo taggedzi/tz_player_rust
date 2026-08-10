@@ -10,7 +10,7 @@ Last updated: 2026-08-10
 |-------|--------|-------|
 | 0 Foundation | **Done** | Cargo workspace, CI, ADRs, SPEC, media split |
 | 1 DB + state | **Done** | Schema v8, FTS5, `PlaylistStore`, transient editor drafts, `AppState` |
-| 2 Playback | **Done + experiment** | Fake + VLC dynamic libVLC FFI; opt-in Rodio/Symphonia/CPAL backend implemented and under compatibility evaluation |
+| 2 Playback | **Done + evaluated experiment** | Fake + VLC dynamic libVLC FFI; opt-in Rodio/Symphonia/CPAL passed the compatibility matrix and remains experimental |
 | 3 Control API | **Done** | Structured `Command` + `AppRuntime` |
 | 4 TUI | **Done** | ratatui playlist, transport, visualizer pane, find, staged dual-pane playlist editor, help |
 | 5 Metadata | **Done** | lofty tags + embedded cover for Cover ASCII |
@@ -47,6 +47,15 @@ cargo run -p tz-player -- --backend rodio doctor
 | `q` | Quit |
 
 Envelope / spectrum / beat / waveform-proxy caches fill on play/add. Transport shows `analysis:ESBW` when caches are warm.
+
+## Rodio evaluation (2026-08-10)
+
+The opt-in Rodio backend passed the common-format, transport, natural-end,
+fallback, and Windows output-device checks. The recommendation is to keep it
+experimental while VLC remains the default because VLC has broader format
+coverage and Linux/macOS still need audible device testing. See
+[`RODIO_EVALUATION.md`](RODIO_EVALUATION.md) for the evidence, binary/resource
+observations, and promotion criteria.
 
 ## Recent hardening (2026-08-08)
 

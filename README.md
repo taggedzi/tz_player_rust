@@ -3,7 +3,7 @@
 Rust rewrite of [tz-player](https://github.com/taggedzi/tz-player) — a keyboard-driven, local-first terminal music player.
 
 **Status:** feature-complete for the v1 parity slice, with VLC playback by
-default and an opt-in experimental Rodio backend under evaluation. See
+default and an evaluated opt-in Rodio backend retained as experimental. See
 [`docs/PROGRESS.md`](docs/PROGRESS.md).
 
 **Conversion plan (phases, decisions, backlog for AIs/humans):** [`docs/CONVERSION_PLAN.md`](docs/CONVERSION_PLAN.md)
@@ -125,6 +125,7 @@ macOS, and locked dependency policy).
 - [`docs/SPEC.md`](docs/SPEC.md) — product scope  
 - [`docs/architecture.md`](docs/architecture.md) — crate boundaries  
 - [`docs/PROGRESS.md`](docs/PROGRESS.md) — implementation status  
+- [`docs/RODIO_EVALUATION.md`](docs/RODIO_EVALUATION.md) — compatibility evidence and recommendation
 - [`docs/tz_player_v2_future_project.md`](docs/tz_player_v2_future_project.md) — long-term vision  
 - [`docs/adr/`](docs/adr/) — decisions  
 - `_ref_tz_player/` — Python reference tree (local)

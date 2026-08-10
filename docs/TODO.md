@@ -118,7 +118,7 @@ All four done.
   inventory is locked by a registry test, while focused rendering tests cover
   the shared spectrum, waveform, cover-art, matrix, and particle families.
 - [x] Remove multi-select from the playlist-edit workflow; ordering and additions now happen in the staged editor. Existing legacy browse commands remain only for compatibility and are not used by the `a` path.
-- [ ] **Add and evaluate an experimental Rodio playback backend alongside VLC.**
+- [x] **Add and evaluate an experimental Rodio playback backend alongside VLC.**
   Keep VLC as the default while `--backend rodio` is tested for transport parity,
   common-format coverage, natural-end behavior, and cross-platform output. The
   approved implementation must follow the
