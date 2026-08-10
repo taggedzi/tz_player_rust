@@ -9,10 +9,14 @@ mod paths;
 mod player;
 mod runtime;
 mod state;
+mod terminal;
 
 pub use about::{about_info, AboutInfo, PRODUCT_DESCRIPTION, PRODUCT_NAME};
 pub use levels::{AnalysisSample, LevelSample, LevelService, LevelSource};
-pub use metadata::{read_track_meta, refresh_playlist_metadata};
+pub use metadata::{
+    configure_lofty_for_untrusted_media, read_track_meta, refresh_playlist_metadata,
+    METADATA_ITEM_MAX_BYTES,
+};
 pub use paths::{app_paths, app_paths_or_cwd, AppPaths};
 pub use player::{PlayerError, PlayerService, PlayerState, RepeatMode};
 pub use runtime::{
@@ -20,6 +24,7 @@ pub use runtime::{
     StatusLevel,
 };
 pub use state::{load_state, load_state_with_notice, save_state, AppState};
+pub use terminal::{terminal_safe, terminal_safe_path};
 
 /// Speed limits (ADR-0003 / Python parity).
 pub const SPEED_MIN: f64 = 0.5;

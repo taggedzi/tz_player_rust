@@ -5,6 +5,88 @@ both "Core" and "TUI" (About info) have been merged. The Shift+Left/Right seek
 item has been removed — verified already implemented in
 `crates/tz-tui/src/lib.rs` (bound to ±30s).
 
+## Security hardening backlog
+
+Triaged from the 2026-08-09 security review. There are no Tier 0 emergency
+findings. Complete Tiers 1 and 2 before a public release; Tier 3 is the
+release-hardening phase.
+
+### Security Tier 1 — Address before public release
+
+- [x] **Eliminate multithreaded environment mutation.** `VLC_PLUGIN_PATH` is
+  now configured only on Windows during synchronous binary/example startup,
+  before the Tokio runtime is built. The VLC worker no longer mutates the
+  environment, Unix configuration is a tested no-op, late `PATH` mutation was
+  removed from the loader, and CI covers Windows, Linux, and macOS builds.
+  Remove or relocate the
+  `VLC_PLUGIN_PATH` mutation from the VLC worker. Configure it before Tokio
+  starts, avoid the mutation on Unix, or restrict it to Windows if that is the
+  only platform requiring it. Verify VLC startup on Windows, Linux, and macOS.
+  **Done when:** no Unix code mutates the process environment after threads
+  start.
+- [x] **Bound media-analysis resource consumption.** FFmpeg PCM is consumed in
+  bounded streaming chunks with null stdin and decoded-byte, duration, and
+  wall-clock limits; limit and timeout paths kill and reap the child. Native
+  WAV samples are streamed under the same limits, and all four cache products
+  share one decode per track. User overrides have documented hard ceilings.
+  Oversized WAV and FFmpeg paths have regression tests.
+- [x] **Limit embedded cover-art decoding.** Lofty now enforces an 8 MiB
+  per-item allocation cap on every metadata-reading thread; cover parsing also
+  has a cumulative 32 MiB read budget and rejects more than 16 MiB of picture
+  payload. Pictures over 8 MiB are skipped before image parsing, and strict
+  4096x4096 / 32 MiB decoder limits are tested before the 160px resize.
+- [x] **Sanitize plain terminal output.** Shared `terminal_safe` /
+  `terminal_safe_path` helpers visibly escape C0/C1 controls, ESC/BEL, CR/LF,
+  line separators, and directional controls. Playlist metadata, CLI errors,
+  diagnostic paths/notes, log setup failures, and terminal-facing tracing use
+  them. ANSI, OSC, newline, C1 CSI, and bidi payloads have regression tests.
+
+### Security Tier 2 — Security hardening
+
+- [x] **Make the LibVLC ABI explicit and fail closed.** The stable
+  `libvlc_get_version` discovery symbol is loaded first; only validated VLC 3.x
+  libraries resolve the dedicated V3 function table and millisecond
+  conversions. VLC 4 and unknown majors are rejected before ABI-specific
+  lookup because V4 construction/seeking differs. C states cross as integers
+  and are checked before conversion; unsupported versions, unknown states, and
+  V3 time units have regression tests.
+- [x] **Remove the affected `lru 0.12.5` dependency.** Ratatui 0.30.2 and
+  Crossterm 0.29 replace it with `lru 0.18.2`; the explicit MSRV is now Rust
+  1.88. TUI/player tests pass and `cargo audit` no longer reports
+  RUSTSEC-2026-0002. The full strict Clippy gate is completed in the dedicated
+  checklist task below.
+- [x] **Resolve the unmaintained `paste` dependency.** Ratatui 0.30.2 removed
+  its dependency, and Lofty was upgraded to 0.25.0, but the current Lofty
+  release still requires `paste` 1.0.15. RUSTSEC-2024-0436 is therefore tracked
+  in `docs/SECURITY.md` as an accepted build-time risk owned by the repository
+  maintainer and expiring 2026-11-08. `Cargo.lock` pins the version and the
+  dependency path is now Lofty-only.
+- [x] **Restore the documented Clippy gate.** The VLC tests now follow all
+  helper functions, and the waveform visualizer passes its rendering inputs in
+  a focused parameter object rather than suppressing `too_many_arguments`.
+  `cargo clippy --workspace --all-targets -- -D warnings` succeeds.
+
+### Security Tier 3 — Supply-chain and operational controls
+
+- [x] **Add dependency security policy to CI.** CI runs pinned versions of
+  `cargo audit` and `cargo deny`; `deny.toml` rejects vulnerabilities, unsound
+  and unmaintained advisories, yanked crates, unapproved licenses, unknown
+  registries, and all unapproved Git dependencies. The single `paste`
+  unmaintained advisory is explicitly linked to its owned, time-bounded
+  exception. `Cargo.lock` remains committed, so vulnerable or disallowed
+  dependency changes block pull requests.
+- [x] **Pin GitHub Actions by immutable commit SHA.** Checkout, Rust toolchain,
+  and Rust cache references use full upstream commit SHAs with adjacent release
+  identifiers. The workflow grants only read access to repository contents,
+  and weekly Dependabot updates provide the reviewable update process. CI no
+  longer executes mutable action tags.
+- [x] **Document runtime trust boundaries.** `docs/SECURITY.md` now identifies
+  FFmpeg-on-`PATH`, dynamically loaded LibVLC/plugins, VLC 3.x-only ABI support,
+  untrusted in-process media parsing, and the compiled analysis/cover limits.
+  User and release docs require trusted distribution channels and environment
+  review. The release checklist now includes dependency policy, exception
+  expiry, and malformed/oversized-media regression checks.
+
 ## Tier 0 — Correctness fixes (small, isolated, do first)
 
 All three done.

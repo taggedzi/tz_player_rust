@@ -2,8 +2,8 @@
 
 use std::path::Path;
 
-use crate::decode::{decode_ffmpeg_raw_stereo, decode_wave_raw};
-use crate::types::{AnalysisError, EnvelopeAnalysisResult};
+use crate::decode::decode_track_for_analysis;
+use crate::types::{AnalysisError, DecodedAnalysisAudio, EnvelopeAnalysisResult};
 
 const DEFAULT_BUCKET_MS: u64 = 50;
 const MAX_POINTS: usize = 12_000;
@@ -13,22 +13,22 @@ pub fn analyze_track_envelope(
     path: &Path,
     bucket_ms: u64,
 ) -> Result<EnvelopeAnalysisResult, AnalysisError> {
-    if !path.is_file() {
-        return Err(AnalysisError::NotFound(path.display().to_string()));
-    }
-    let bucket_ms = bucket_ms.max(10);
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
+    let decoded = decode_track_for_analysis(path)?;
+    analyze_envelope_from_decoded(&decoded, bucket_ms)
+}
 
-    let result = if ext == "wav" || ext == "wave" {
-        analyze_from_raw(decode_wave_raw(path)?, bucket_ms)?
-    } else {
-        let (rate, left, right) = decode_ffmpeg_raw_stereo(path)?;
-        analyze_from_pcm(&left, &right, rate, bucket_ms)?
-    };
+/// Build an envelope from an existing bounded decode so callers generating
+/// several analysis products do not decode the same track twice.
+pub fn analyze_envelope_from_decoded(
+    decoded: &DecodedAnalysisAudio,
+    bucket_ms: u64,
+) -> Result<EnvelopeAnalysisResult, AnalysisError> {
+    let result = analyze_from_pcm(
+        &decoded.left_samples,
+        &decoded.right_samples,
+        decoded.stereo_rate,
+        bucket_ms.max(10),
+    )?;
     Ok(limit_points(result, MAX_POINTS))
 }
 
@@ -36,13 +36,6 @@ pub fn analyze_track_envelope_default(
     path: &Path,
 ) -> Result<EnvelopeAnalysisResult, AnalysisError> {
     analyze_track_envelope(path, DEFAULT_BUCKET_MS)
-}
-
-fn analyze_from_raw(
-    (rate, left, right): (u32, Vec<f32>, Vec<f32>),
-    bucket_ms: u64,
-) -> Result<EnvelopeAnalysisResult, AnalysisError> {
-    analyze_from_pcm(&left, &right, rate, bucket_ms)
 }
 
 fn analyze_from_pcm(

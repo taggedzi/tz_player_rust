@@ -8,7 +8,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use crate::status::BackendStatus;
-use crate::vlc_ffi::{libvlc_state_t, LibVlcApi};
+use crate::vlc_ffi::{LibVlcApi, LibVlcState};
 
 pub enum EngineCmd {
     Play {
@@ -172,7 +172,17 @@ fn worker_main(
         }
 
         // Poll transport while active.
-        let state = engine.map_state();
+        let state = match engine.map_state() {
+            Ok(state) => state,
+            Err(error) => {
+                if last_state != BackendStatus::Error {
+                    let _ = event_tx.send(EngineEvent {
+                        kind: EngineEventKind::Error(error),
+                    });
+                }
+                BackendStatus::Error
+            }
+        };
         if state != last_state {
             last_state = state;
             let _ = event_tx.send(EngineEvent {
@@ -215,12 +225,8 @@ fn worker_main(
 impl Engine {
     fn new(lib_dir: &Path, quiet: bool) -> Result<Self, String> {
         let api = unsafe { LibVlcApi::load(lib_dir)? };
+        tracing::info!(version = api.version(), "validated LibVLC ABI");
 
-        let plugin_dir = lib_dir.join("plugins");
-        if plugin_dir.is_dir() {
-            // Modern VLC uses env (CLI --plugin-path was removed).
-            std::env::set_var("VLC_PLUGIN_PATH", &plugin_dir);
-        }
         let mut args: Vec<String> = Vec::new();
         if quiet {
             args.push("--quiet".into());
@@ -309,13 +315,14 @@ impl Engine {
                 let _ = reply.send(r);
             }
             EngineCmd::GetTransport { reply } => {
-                let raw_state = self.raw_state();
-                let snap = normalize_transport_snapshot(
-                    raw_state,
-                    self.get_time_ms(),
-                    self.get_length_ms(),
-                );
-                let _ = reply.send(Ok(snap));
+                let snap = self.raw_state().map(|raw_state| {
+                    normalize_transport_snapshot(
+                        raw_state,
+                        self.get_time_ms(),
+                        self.get_length_ms(),
+                    )
+                });
+                let _ = reply.send(snap);
             }
             EngineCmd::Shutdown { reply } => {
                 // Handled by outer loop.
@@ -381,29 +388,26 @@ impl Engine {
     }
 
     fn set_time_ms(&mut self, ms: i64) -> Result<(), String> {
-        if let Some(set_time) = self.api.player_set_time {
-            unsafe {
-                set_time(self.player, ms);
-            }
-            return Ok(());
+        unsafe {
+            self.api.set_player_time_ms(self.player, ms);
         }
-        Err("libvlc_media_player_set_time unavailable".into())
+        Ok(())
     }
 
     fn get_time_ms(&self) -> i64 {
-        unsafe { (self.api.player_get_time)(self.player) }
+        unsafe { self.api.player_time_ms(self.player) }
     }
 
     fn get_length_ms(&self) -> i64 {
-        unsafe { (self.api.player_get_length)(self.player) }
+        unsafe { self.api.player_length_ms(self.player) }
     }
 
-    fn map_state(&self) -> BackendStatus {
-        map_vlc_state(self.raw_state())
+    fn map_state(&self) -> Result<BackendStatus, String> {
+        self.raw_state().map(map_vlc_state)
     }
 
-    fn raw_state(&self) -> libvlc_state_t {
-        unsafe { (self.api.player_get_state)(self.player) }
+    fn raw_state(&self) -> Result<LibVlcState, String> {
+        unsafe { self.api.player_state(self.player) }
     }
 
     fn release(&mut self) {
@@ -420,14 +424,14 @@ impl Engine {
     }
 }
 
-fn map_vlc_state(state: libvlc_state_t) -> BackendStatus {
+fn map_vlc_state(state: LibVlcState) -> BackendStatus {
     match state {
-        libvlc_state_t::Playing => BackendStatus::Playing,
-        libvlc_state_t::Paused => BackendStatus::Paused,
-        libvlc_state_t::Stopped | libvlc_state_t::Ended => BackendStatus::Stopped,
-        libvlc_state_t::Opening | libvlc_state_t::Buffering => BackendStatus::Loading,
-        libvlc_state_t::Error => BackendStatus::Error,
-        libvlc_state_t::NothingSpecial => BackendStatus::Idle,
+        LibVlcState::Playing => BackendStatus::Playing,
+        LibVlcState::Paused => BackendStatus::Paused,
+        LibVlcState::Stopped | LibVlcState::Ended => BackendStatus::Stopped,
+        LibVlcState::Opening | LibVlcState::Buffering => BackendStatus::Loading,
+        LibVlcState::Error => BackendStatus::Error,
+        LibVlcState::NothingSpecial => BackendStatus::Idle,
     }
 }
 
@@ -436,38 +440,17 @@ fn map_vlc_state(state: libvlc_state_t) -> BackendStatus {
 /// end unambiguous to the playlist-advance logic. A user-requested VLC `Stopped`
 /// state keeps its actual position and therefore remains distinguishable.
 fn normalize_transport_snapshot(
-    state: libvlc_state_t,
+    state: LibVlcState,
     position_ms: i64,
     duration_ms: i64,
 ) -> (u64, u64, BackendStatus) {
     let duration_ms = duration_ms.max(0) as u64;
-    let position_ms = if state == libvlc_state_t::Ended && duration_ms > 0 {
+    let position_ms = if state == LibVlcState::Ended && duration_ms > 0 {
         duration_ms
     } else {
         position_ms.max(0) as u64
     };
     (position_ms, duration_ms, map_vlc_state(state))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ended_snapshot_reaches_duration_when_vlc_clock_is_short() {
-        assert_eq!(
-            normalize_transport_snapshot(libvlc_state_t::Ended, 179_720, 180_000),
-            (180_000, 180_000, BackendStatus::Stopped)
-        );
-    }
-
-    #[test]
-    fn explicit_stop_preserves_position_and_cannot_look_like_natural_end() {
-        assert_eq!(
-            normalize_transport_snapshot(libvlc_state_t::Stopped, 42_000, 180_000),
-            (42_000, 180_000, BackendStatus::Stopped)
-        );
-    }
 }
 
 fn path_to_file_uri(path: &str) -> String {
@@ -496,4 +479,25 @@ fn cstr_lossy(p: *const i8) -> String {
         return String::new();
     }
     unsafe { CStr::from_ptr(p).to_string_lossy().into_owned() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ended_snapshot_reaches_duration_when_vlc_clock_is_short() {
+        assert_eq!(
+            normalize_transport_snapshot(LibVlcState::Ended, 179_720, 180_000),
+            (180_000, 180_000, BackendStatus::Stopped)
+        );
+    }
+
+    #[test]
+    fn explicit_stop_preserves_position_and_cannot_look_like_natural_end() {
+        assert_eq!(
+            normalize_transport_snapshot(LibVlcState::Stopped, 42_000, 180_000),
+            (42_000, 180_000, BackendStatus::Stopped)
+        );
+    }
 }

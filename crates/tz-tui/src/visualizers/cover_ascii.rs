@@ -1,10 +1,12 @@
 //! Cover-art ASCII visualizers — render embedded album art when present.
 
-use std::io::Cursor;
+use std::fs::File;
+use std::io::{self, BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use image::imageops::FilterType;
-use image::{DynamicImage, GenericImageView};
+use image::{DynamicImage, GenericImageView, ImageReader, Limits};
+use lofty::config::ParseOptions;
 use lofty::file::TaggedFileExt;
 use lofty::probe::Probe;
 use ratatui::style::Color;
@@ -14,6 +16,11 @@ use super::host::{VisualizerContext, VisualizerFrameInput, VisualizerPlugin};
 use super::util::{energy_color, fit_lines, mono_level, track_label, Canvas};
 
 const RAMP: &[char] = &[' ', '.', ':', '-', '=', '+', '*', '#', '%', '@'];
+const MAX_EMBEDDED_PICTURE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_TOTAL_PICTURE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_COVER_METADATA_READ_BYTES: usize = 32 * 1024 * 1024;
+const MAX_COVER_DIMENSION: u32 = 4096;
+const MAX_COVER_DECODE_ALLOC_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Debug, Default)]
 struct CoverCache {
@@ -82,7 +89,15 @@ impl CoverCache {
 }
 
 fn load_cover_image(path: &Path) -> Option<DynamicImage> {
-    let tagged = Probe::open(path).ok()?.read().ok()?;
+    tz_core::configure_lofty_for_untrusted_media();
+    let file = File::open(path).ok()?;
+    let reader = BufReader::new(ReadBudget::new(file, MAX_COVER_METADATA_READ_BYTES));
+    let tagged = Probe::new(reader)
+        .options(ParseOptions::new().read_properties(false))
+        .guess_file_type()
+        .ok()?
+        .read()
+        .ok()?;
     let mut pics: Vec<_> = tagged
         .tags()
         .iter()
@@ -102,22 +117,76 @@ fn load_cover_image(path: &Path) -> Option<DynamicImage> {
         lofty::picture::PictureType::Other => 1,
         _ => 2,
     });
+    let total_picture_bytes = pics.iter().try_fold(0usize, |total, picture| {
+        total.checked_add(picture.data().len())
+    })?;
+    if total_picture_bytes > MAX_TOTAL_PICTURE_BYTES {
+        return None;
+    }
     for pic in pics {
         let data = pic.data();
-        if data.is_empty() {
+        if data.is_empty() || data.len() > MAX_EMBEDDED_PICTURE_BYTES {
             continue;
         }
-        if let Ok(img) = image::load_from_memory(data) {
-            return Some(img);
-        }
-        let reader = image::ImageReader::new(Cursor::new(data));
-        if let Ok(fmt) = reader.with_guessed_format() {
-            if let Ok(img) = fmt.decode() {
-                return Some(img);
-            }
+        if let Some(image) = decode_cover_data(data) {
+            return Some(image);
         }
     }
     None
+}
+
+fn decode_cover_data(data: &[u8]) -> Option<DynamicImage> {
+    if data.is_empty() || data.len() > MAX_EMBEDDED_PICTURE_BYTES {
+        return None;
+    }
+    let mut reader = ImageReader::new(Cursor::new(data))
+        .with_guessed_format()
+        .ok()?;
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(MAX_COVER_DIMENSION);
+    limits.max_image_height = Some(MAX_COVER_DIMENSION);
+    limits.max_alloc = Some(MAX_COVER_DECODE_ALLOC_BYTES);
+    reader.limits(limits);
+    reader.decode().ok()
+}
+
+/// Read/seek wrapper whose budget is cumulative: seeking backwards does not
+/// refund bytes. Together with Lofty's per-item allocation cap, this prevents
+/// a tag containing many individually valid pictures from accumulating an
+/// unbounded metadata allocation before the total payload can be inspected.
+struct ReadBudget<R> {
+    inner: R,
+    remaining: usize,
+}
+
+impl<R> ReadBudget<R> {
+    fn new(inner: R, budget: usize) -> Self {
+        Self {
+            inner,
+            remaining: budget,
+        }
+    }
+}
+
+impl<R: Read> Read for ReadBudget<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if self.remaining == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "embedded metadata exceeds the cover-art read budget",
+            ));
+        }
+        let allowed = buffer.len().min(self.remaining);
+        let count = self.inner.read(&mut buffer[..allowed])?;
+        self.remaining -= count;
+        Ok(count)
+    }
+}
+
+impl<R: Seek> Seek for ReadBudget<R> {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        self.inner.seek(position)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -332,6 +401,7 @@ fn cover_pixel_color(rgb: (u8, u8, u8)) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::ImageFormat;
 
     #[test]
     fn square_cover_uses_two_columns_per_terminal_row() {
@@ -352,5 +422,31 @@ mod tests {
     fn cover_characters_preserve_source_pixel_color() {
         assert_eq!(cover_pixel_color((220, 35, 90)), Color::Rgb(220, 35, 90));
         assert_eq!(cover_pixel_color((0, 4, 7)), Color::Rgb(8, 8, 8));
+    }
+
+    #[test]
+    fn cover_decoder_accepts_small_art_and_rejects_excessive_dimensions() {
+        let mut small_bytes = Cursor::new(Vec::new());
+        DynamicImage::new_rgb8(32, 32)
+            .write_to(&mut small_bytes, ImageFormat::Png)
+            .unwrap();
+        assert!(decode_cover_data(small_bytes.get_ref()).is_some());
+
+        let mut wide_bytes = Cursor::new(Vec::new());
+        DynamicImage::new_rgb8(MAX_COVER_DIMENSION + 1, 1)
+            .write_to(&mut wide_bytes, ImageFormat::Png)
+            .unwrap();
+        assert!(decode_cover_data(wide_bytes.get_ref()).is_none());
+    }
+
+    #[test]
+    fn metadata_read_budget_is_cumulative_across_seeks() {
+        let mut reader = ReadBudget::new(Cursor::new([0u8; 16]), 10);
+        let mut first = [0u8; 6];
+        assert_eq!(reader.read(&mut first).unwrap(), 6);
+        reader.seek(SeekFrom::Start(0)).unwrap();
+        let mut second = [0u8; 6];
+        assert_eq!(reader.read(&mut second).unwrap(), 4);
+        assert!(reader.read(&mut second).is_err());
     }
 }

@@ -2,14 +2,30 @@
 
 use std::path::Path;
 
+use lofty::config::{apply_global_options, GlobalOptions};
 use lofty::file::AudioFile;
 use lofty::prelude::*;
 use lofty::probe::Probe;
 
 use tz_db::TrackMeta;
 
+/// Maximum allocation Lofty may make for any single untrusted tag item.
+pub const METADATA_ITEM_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+/// Apply Lofty's thread-local allocation policy immediately before parsing.
+///
+/// Lofty options are thread-local, so each metadata entry point calls this
+/// rather than relying on one process-global initialization.
+pub fn configure_lofty_for_untrusted_media() {
+    let options = GlobalOptions::new()
+        .allocation_limit(METADATA_ITEM_MAX_BYTES)
+        .preserve_format_specific_items(false);
+    apply_global_options(options);
+}
+
 /// Read tags from a local audio file into a `TrackMeta` payload.
 pub fn read_track_meta(path: &Path) -> TrackMeta {
+    configure_lofty_for_untrusted_media();
     let (mtime_ns, size_bytes) = match std::fs::metadata(path) {
         Ok(m) => {
             let mtime = m
@@ -32,7 +48,7 @@ pub fn read_track_meta(path: &Path) -> TrackMeta {
                     tag.title().map(|s| s.to_string()),
                     tag.artist().map(|s| s.to_string()),
                     tag.album().map(|s| s.to_string()),
-                    tag.year().map(|y| y as i32),
+                    tag.date().map(|date| i32::from(date.year)),
                 )
             } else {
                 (None, None, None, None)

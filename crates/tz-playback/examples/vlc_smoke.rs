@@ -9,7 +9,7 @@ use std::fs::File;
 use std::io::Write;
 use std::time::Duration;
 
-use tz_playback::{PlaybackBackend, VlcPlaybackBackend};
+use tz_playback::{configure_vlc_environment, PlaybackBackend, VlcPlaybackBackend};
 
 fn write_sine_wav(path: &std::path::Path, seconds: f32, freq: f32) {
     let sample_rate = 44100u32;
@@ -37,8 +37,16 @@ fn write_sine_wav(path: &std::path::Path, seconds: f32, freq: f32) {
     File::create(path).unwrap().write_all(&data).unwrap();
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    configure_vlc_environment();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("async runtime");
+    runtime.block_on(run());
+}
+
+async fn run() {
     let dir = std::env::temp_dir().join("tz_vlc_smoke");
     std::fs::create_dir_all(&dir).unwrap();
     let wav = dir.join("beep.wav");

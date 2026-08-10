@@ -90,23 +90,27 @@ impl VisualizerPlugin for WaveformProxyVisualizer {
 
         draw_half_waveform(
             &mut canvas,
-            center_y,
-            center_y,
-            -1,
-            &self.displayed_left,
-            Channel::Left,
-            self.gain_left,
-            self.color,
+            HalfWaveformParams {
+                center_y,
+                radius: center_y,
+                direction: -1,
+                envelope: &self.displayed_left,
+                channel: Channel::Left,
+                gain: self.gain_left,
+                color: self.color,
+            },
         );
         draw_half_waveform(
             &mut canvas,
-            center_y,
-            height.saturating_sub(center_y + 1),
-            1,
-            &self.displayed_right,
-            Channel::Right,
-            self.gain_right,
-            self.color,
+            HalfWaveformParams {
+                center_y,
+                radius: height.saturating_sub(center_y + 1),
+                direction: 1,
+                envelope: &self.displayed_right,
+                channel: Channel::Right,
+                gain: self.gain_right,
+                color: self.color,
+            },
         );
 
         if center_y > 0 {
@@ -244,16 +248,27 @@ fn update_envelope(displayed: &mut Vec<(f32, f32)>, target: &[(f32, f32)]) {
     }
 }
 
-fn draw_half_waveform(
-    canvas: &mut Canvas,
+struct HalfWaveformParams<'a> {
     center_y: usize,
     radius: usize,
     direction: i32,
-    envelope: &[(f32, f32)],
+    envelope: &'a [(f32, f32)],
     channel: Channel,
     gain: f32,
     color: bool,
-) {
+}
+
+fn draw_half_waveform(canvas: &mut Canvas, params: HalfWaveformParams<'_>) {
+    let HalfWaveformParams {
+        center_y,
+        radius,
+        direction,
+        envelope,
+        channel,
+        gain,
+        color,
+    } = params;
+
     if radius == 0 || canvas.width == 0 {
         return;
     }

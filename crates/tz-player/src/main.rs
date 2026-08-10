@@ -9,9 +9,12 @@ use clap::{Parser, Subcommand, ValueEnum};
 use tracing_subscriber::EnvFilter;
 
 use tz_analysis::ffmpeg_available;
-use tz_core::{about_info, app_paths_or_cwd, load_state, open_runtime, save_state, AppState};
+use tz_core::{
+    about_info, app_paths_or_cwd, load_state, open_runtime, save_state, terminal_safe,
+    terminal_safe_path, AppState,
+};
 use tz_db::{open_database, SCHEMA_VERSION};
-use tz_playback::{discover_vlc, BackendKind};
+use tz_playback::{configure_vlc_environment, discover_vlc, BackendKind};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -83,9 +86,31 @@ enum Commands {
     },
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
     let cli = Cli::parse();
+    if matches!(&cli.backend, BackendCli::Vlc) {
+        // VLC_PLUGIN_PATH is process-global. Configure it while startup is
+        // still single-threaded, before Tokio creates its worker threads.
+        configure_vlc_environment();
+    }
+
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!(
+                "Could not start async runtime: {}",
+                terminal_safe(error.to_string())
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    runtime.block_on(run(cli))
+}
+
+async fn run(cli: Cli) -> ExitCode {
     init_logging(&cli);
     tracing::info!(version = VERSION, "tz-player starting");
 
@@ -109,21 +134,21 @@ async fn main() -> ExitCode {
                 ExitCode::SUCCESS
             }
             Err(e) => {
-                eprintln!("{e}");
+                eprintln!("{}", terminal_safe(&e));
                 ExitCode::FAILURE
             }
         },
         Some(Commands::List { limit }) => match cmd_list(limit).await {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
-                eprintln!("{e}");
+                eprintln!("{}", terminal_safe(&e));
                 ExitCode::FAILURE
             }
         },
         None => match run_app(cli.backend.into()).await {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
-                eprintln!("{e}");
+                eprintln!("{}", terminal_safe(&e));
                 ExitCode::FAILURE
             }
         },
@@ -171,9 +196,17 @@ async fn cmd_list(limit: usize) -> Result<(), String> {
             .clone()
             .unwrap_or_else(|| row.path.display().to_string());
         let artist = row.artist.as_deref().unwrap_or("-");
-        println!("{:>4}. {} — {}", i + 1, artist, title);
+        println!("{}", playlist_line(i + 1, artist, &title));
     }
     Ok(())
+}
+
+fn playlist_line(number: usize, artist: &str, title: &str) -> String {
+    format!(
+        "{number:>4}. {} — {}",
+        terminal_safe(artist),
+        terminal_safe(title)
+    )
 }
 
 fn init_logging(cli: &Cli) {
@@ -191,8 +224,9 @@ fn init_logging(cli: &Cli) {
         if let Some(parent) = path.parent() {
             if let Err(error) = std::fs::create_dir_all(parent) {
                 eprintln!(
-                    "Could not create log directory '{}': {error}",
-                    parent.display()
+                    "Could not create log directory '{}': {}",
+                    terminal_safe_path(parent),
+                    terminal_safe(error.to_string())
                 );
             }
         }
@@ -207,7 +241,11 @@ fn init_logging(cli: &Cli) {
                 return;
             }
             Err(error) => {
-                eprintln!("Could not open log file '{}': {error}", path.display());
+                eprintln!(
+                    "Could not open log file '{}': {}",
+                    terminal_safe_path(path),
+                    terminal_safe(error.to_string())
+                );
             }
         }
     }
@@ -243,13 +281,13 @@ fn cmd_doctor(backend: BackendKind) -> ExitCode {
     let discovery = discover_vlc();
 
     if let Some(exe) = &discovery.vlc_executable {
-        println!("[OK]   VLC executable: {}", exe.display());
+        println!("[OK]   VLC executable: {}", terminal_safe_path(exe));
     } else {
         println!("[WARN] VLC executable not found on PATH / common install paths");
         warns += 1;
     }
     if let Some(dir) = &discovery.libvlc_dir {
-        println!("[OK]   libVLC directory: {}", dir.display());
+        println!("[OK]   libVLC directory: {}", terminal_safe_path(dir));
         println!("[OK]   libVLC dynamic load path ready (runtime FFI)");
     } else {
         println!("[WARN] libVLC not found in common install paths");
@@ -259,7 +297,7 @@ fn cmd_doctor(backend: BackendKind) -> ExitCode {
         }
     }
     for note in &discovery.notes {
-        println!("       note: {note}");
+        println!("       note: {}", terminal_safe(note));
     }
 
     match backend {
@@ -280,16 +318,16 @@ fn cmd_doctor(backend: BackendKind) -> ExitCode {
     let paths = app_paths_or_cwd();
     println!();
     println!("Paths:");
-    println!("  data_dir:   {}", paths.data_dir.display());
-    println!("  config_dir: {}", paths.config_dir.display());
-    println!("  log_dir:    {}", paths.log_dir.display());
-    println!("  state:      {}", paths.state_file.display());
-    println!("  database:   {}", paths.db_file.display());
+    println!("  data_dir:   {}", terminal_safe_path(&paths.data_dir));
+    println!("  config_dir: {}", terminal_safe_path(&paths.config_dir));
+    println!("  log_dir:    {}", terminal_safe_path(&paths.log_dir));
+    println!("  state:      {}", terminal_safe_path(&paths.state_file));
+    println!("  database:   {}", terminal_safe_path(&paths.db_file));
 
     match open_database(&paths.db_file) {
         Ok(_) => println!("[OK]   Database writable (schema v{SCHEMA_VERSION})"),
         Err(e) => {
-            println!("[FAIL] Database: {e}");
+            println!("[FAIL] Database: {}", terminal_safe(e.to_string()));
             ok = false;
         }
     }
@@ -297,7 +335,7 @@ fn cmd_doctor(backend: BackendKind) -> ExitCode {
     match std::fs::create_dir_all(&paths.log_dir) {
         Ok(()) => println!("[OK]   Log directory writable"),
         Err(e) => {
-            println!("[FAIL] Log directory: {e}");
+            println!("[FAIL] Log directory: {}", terminal_safe(e.to_string()));
             ok = false;
         }
     }
@@ -368,7 +406,7 @@ fn cmd_setup() {
     println!();
     println!("Data lives under a separate identity from the Python app:");
     let paths = app_paths_or_cwd();
-    println!("  {}", paths.data_dir.display());
+    println!("  {}", terminal_safe_path(&paths.data_dir));
     println!();
     println!("Note: FFmpeg is never used for the listen path in v1.");
     println!("      VLC plays audio; FFmpeg feeds offline analysis only.");
@@ -379,11 +417,11 @@ fn cmd_setup() {
 fn cmd_paths() {
     let paths = app_paths_or_cwd();
     println!("tz-player paths  v{VERSION}");
-    println!("data_dir:   {}", paths.data_dir.display());
-    println!("config_dir: {}", paths.config_dir.display());
-    println!("log_dir:    {}", paths.log_dir.display());
-    println!("state:      {}", paths.state_file.display());
-    println!("database:   {}", paths.db_file.display());
+    println!("data_dir:   {}", terminal_safe_path(&paths.data_dir));
+    println!("config_dir: {}", terminal_safe_path(&paths.config_dir));
+    println!("log_dir:    {}", terminal_safe_path(&paths.log_dir));
+    println!("state:      {}", terminal_safe_path(&paths.state_file));
+    println!("database:   {}", terminal_safe_path(&paths.db_file));
     println!("schema:     v{SCHEMA_VERSION}");
     // ensure state file can be created
     if !paths.state_file.exists() {
@@ -418,5 +456,21 @@ mod tests {
             resolved_log_path(&explicit),
             Some(PathBuf::from("diagnostics.log"))
         );
+    }
+
+    #[test]
+    fn playlist_lines_escape_terminal_and_bidi_controls() {
+        let line = playlist_line(
+            7,
+            "artist\x1B]0;owned\x07\n",
+            "title\x1B[31mred\x1B[0m\u{202E}",
+        );
+        assert_eq!(
+            line,
+            "   7. artist\\x1B]0;owned\\x07\\n — title\\x1B[31mred\\x1B[0m\\u{202E}"
+        );
+        assert!(!line.contains('\x1B'));
+        assert!(!line.contains('\n'));
+        assert!(!line.contains('\u{202E}'));
     }
 }

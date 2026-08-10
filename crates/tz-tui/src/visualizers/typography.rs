@@ -103,7 +103,7 @@ fn glitch_text(text: &str, frame: u64, onset: bool) -> String {
     }
     let mut out = String::new();
     for (i, ch) in chars.iter().enumerate() {
-        let mutate = onset || ((frame as usize + i * 3) % 17 == 0);
+        let mutate = onset || (frame as usize + i * 3).is_multiple_of(17);
         if mutate && ch.is_alphanumeric() {
             out.push(GLITCH[(i + frame as usize) % GLITCH.len()]);
         } else {

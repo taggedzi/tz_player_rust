@@ -13,10 +13,14 @@ pub use beat::{
     analyze_beats_from_decoded, analyze_beats_from_mono, analyze_track_beats, BeatAnalysisResult,
 };
 pub use decode::{
-    decode_ffmpeg_raw_stereo, decode_track_for_analysis, decode_wave_raw, ffmpeg_available,
-    AnalysisDecoder, FfmpegCliDecoder, WavNativeDecoder, MONO_TARGET_RATE, STEREO_TARGET_RATE,
+    decode_ffmpeg_raw_stereo, decode_ffmpeg_raw_stereo_with_limits, decode_track_for_analysis,
+    decode_track_for_analysis_with_limits, decode_wave_raw, decode_wave_raw_with_limits,
+    ffmpeg_available, AnalysisDecoder, AnalysisLimits, FfmpegCliDecoder, WavNativeDecoder,
+    MONO_TARGET_RATE, STEREO_TARGET_RATE,
 };
-pub use envelope::{analyze_track_envelope, analyze_track_envelope_default};
+pub use envelope::{
+    analyze_envelope_from_decoded, analyze_track_envelope, analyze_track_envelope_default,
+};
 pub use spectrum::{
     analyze_spectrum_from_decoded, analyze_spectrum_from_mono, analyze_track_spectrum,
     SpectrumAnalysisResult,

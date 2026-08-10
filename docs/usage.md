@@ -7,8 +7,19 @@ tz-player setup
 tz-player doctor
 ```
 
-- **VLC** — required for real audio (libVLC loaded at runtime).
+- **VLC 3.x** — required for real audio (libVLC loaded at runtime). The VLC 4
+  ABI changes player construction, seek signatures, and clocks to
+  microseconds; tz-player rejects it until a complete VLC 4 backend exists.
 - **FFmpeg** — optional; improves analysis for spectrum / beat / waveform visualizers.
+
+Install both only through a trusted operating-system package manager or another
+verified distribution channel. FFmpeg is the first `ffmpeg` executable found
+on `PATH`, while LibVLC and its plugins are dynamically loaded into the player
+process. Do not shadow FFmpeg with a binary in a user-writable directory or set
+`VLC_PLUGIN_PATH` to an untrusted directory. Run `tz-player doctor` after
+installation or environment changes, and separately verify which `ffmpeg`
+executable is first on `PATH`. See [the security policy](SECURITY.md) for the
+complete runtime trust boundaries and resource limits.
 
 ## Common commands
 
@@ -30,6 +41,11 @@ tz-player doctor
 tz-player paths
 tz-player --version
 ```
+
+All plain CLI output treats filenames and metadata as untrusted. C0/C1
+terminal controls (including ANSI/OSC ESC and BEL), embedded CR/LF, and Unicode
+directional controls are printed as visible `\\xNN` / `\\u{NNNN}` escapes.
+They cannot alter terminal state or visually reorder surrounding diagnostics.
 
 Build from source:
 
@@ -88,6 +104,21 @@ cargo build --release -p tz-player
 | `viz.particle.*` | Gravity well, shockwave, rain, orbital, ember, magnetic, tornado, constellation, data core, plasma |
 
 Analysis caches (envelope `E`, spectrum `S`, beat `B`, waveform `W`) fill in the background on play/add. Transport shows `analysis:ESBW` when ready, or `analysis:analyzing`.
+
+Offline decoding is bounded and runs once per track even when several caches
+are missing. Defaults limit decoded stereo PCM to 256 MiB, media duration to
+one hour, and FFmpeg/native-WAV execution to two minutes. Advanced users can
+lower or raise those limits with
+`TZ_PLAYER_ANALYSIS_MAX_DECODED_BYTES`,
+`TZ_PLAYER_ANALYSIS_MAX_DURATION_SECS`, and
+`TZ_PLAYER_ANALYSIS_TIMEOUT_SECS`; compiled ceilings remain 1 GiB, six hours,
+and fifteen minutes. FFmpeg stdin is disabled, and any process that reaches a
+limit is killed and reaped.
+
+Embedded cover art is treated as untrusted input. Individual picture payloads
+are capped at 8 MiB, all pictures in a tag at 16 MiB, cumulative cover-metadata
+reads at 32 MiB, and decoded images at 4096x4096 / 32 MiB. Artwork outside
+those limits is ignored and the cover visualizer uses its normal empty state.
 
 ## Empty playlist
 

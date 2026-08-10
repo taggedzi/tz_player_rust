@@ -38,6 +38,12 @@ pub enum AnalysisError {
     #[error("FFmpeg unavailable")]
     FfmpegUnavailable,
 
+    #[error("analysis resource limit exceeded: {0}")]
+    ResourceLimit(String),
+
+    #[error("analysis timed out: {0}")]
+    Timeout(String),
+
     #[error("unsupported format for analysis: {0}")]
     Unsupported(String),
 

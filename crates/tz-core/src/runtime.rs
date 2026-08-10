@@ -14,6 +14,7 @@ use crate::metadata::{read_track_meta, refresh_playlist_metadata};
 use crate::paths::AppPaths;
 use crate::player::{PlayerError, PlayerService, RepeatMode};
 use crate::state::{load_state_with_notice, save_state, AppState};
+use crate::terminal::terminal_safe;
 
 const STATUS_TTL: Duration = Duration::from_secs(4);
 const VLC_START_ATTEMPTS: usize = 3;
@@ -158,7 +159,8 @@ pub async fn open_runtime(
                 }
                 Err(error) => {
                     failures.push(format!("attempt {attempt}: {error}"));
-                    tracing::warn!(attempt, error = %error, "VLC backend failed to start");
+                    let safe_error = terminal_safe(error.to_string());
+                    tracing::warn!(attempt, error = %safe_error, "VLC backend failed to start");
                     if attempt < VLC_START_ATTEMPTS {
                         tokio::time::sleep(Duration::from_millis(150 * attempt as u64)).await;
                         // Re-run discovery as well as dynamic loading on every attempt.
@@ -172,7 +174,8 @@ pub async fn open_runtime(
         }
         if !started {
             let details = failures.join("; ");
-            tracing::error!(%details, "all VLC startup attempts failed; falling back to fake");
+            let safe_details = terminal_safe(&details);
+            tracing::error!(details = %safe_details, "all VLC startup attempts failed; falling back to fake");
             player =
                 PlayerService::new(PlaylistStore::new(paths.db_file.clone()), BackendKind::Fake);
             player
@@ -296,7 +299,7 @@ pub async fn open_runtime(
     if let Some(notice) = state_notice {
         // Prefer a short single-line status for the TUI footer.
         runtime.set_warning("State file was invalid; settings reset to defaults");
-        tracing::warn!("{notice}");
+        tracing::warn!("{}", terminal_safe(&notice));
     } else if let Some(fb) = runtime.backend_fallback_notice.clone() {
         // The playback backend itself failed to start — this is exactly the
         // "disrupting playback" case, so it stays until dismissed.
@@ -509,16 +512,16 @@ impl AppRuntime {
                         .restore_item_context(self.playlist_id, item_id)
                         .await
                     {
-                        tracing::warn!(%error, "could not refresh selected track context");
+                        tracing::warn!(error = %terminal_safe(error.to_string()), "could not refresh selected track context");
                     }
                 }
             }
             Ok(Err(error)) => {
-                tracing::warn!(%error, "startup metadata refresh failed");
+                tracing::warn!(error = %terminal_safe(&error), "startup metadata refresh failed");
                 self.set_warning(format!("Metadata refresh failed: {error}"));
             }
             Err(error) => {
-                tracing::warn!(%error, "startup metadata task failed");
+                tracing::warn!(error = %terminal_safe(error.to_string()), "startup metadata task failed");
                 self.set_warning(format!("Metadata task failed: {error}"));
             }
         }
@@ -1405,7 +1408,7 @@ impl AppRuntime {
                 .name("tz-analyze".into())
                 .spawn(move || {
                     if let Err(e) = levels.ensure_analysis(&p) {
-                        tracing::debug!("analysis: {e}");
+                        tracing::debug!("analysis: {}", terminal_safe(&e));
                     }
                 });
         }
