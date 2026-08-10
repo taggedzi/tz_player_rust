@@ -395,7 +395,7 @@ Ordered backlog for later work (not blocking v1 claim):
 | Priority | Workstream | Notes |
 |----------|------------|--------|
 | A | Live playback-backend PCM sampling | True oscilloscope-class visualizers |
-| B | Perf benches vs Python | Opt-in; compare analysis + UI idle |
+| B | Perf benches vs Python | Rust opt-in DSP/DB/UI-idle harness landed; shared-corpus Python and live-playback comparison remain |
 | C | Headless control server | `tz-player serve` over IPC using `tz-control` |
 | D | Multi-process split | Controller / Engine / Library Manager processes |
 | E | Library manager features | Watch/rescan, multi-playlist UX, smart playlists |

@@ -1,0 +1,18 @@
+[package]
+name = "tz-bench"
+description = "Opt-in performance and resource benchmark runner for tz-player"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+tz-analysis.workspace = true
+tz-db.workspace = true
+tz-tui = { workspace = true, features = ["bench-support"] }
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true

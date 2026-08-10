@@ -2748,6 +2748,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tz-bench"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "serde",
+ "serde_json",
+ "tz-analysis",
+ "tz-db",
+ "tz-tui",
+]
+
+[[package]]
 name = "tz-control"
 version = "0.1.0"
 dependencies = [

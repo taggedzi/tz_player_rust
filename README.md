@@ -126,6 +126,7 @@ crates/
   tz-control     # structured Command + TransportSnapshot
   tz-db          # SQLite schema v8 + stores + FTS + editor drafts
   tz-tui         # ratatui UI + visualizer plugins
+  tz-bench       # opt-in DSP/DB/TUI performance + resource runner (not shipped)
 ```
 
 ## Quality gates
@@ -139,6 +140,18 @@ cargo audit
 cargo deny --locked check advisories bans licenses sources
 ```
 
+Opt-in performance and resource suite:
+
+```powershell
+cargo run --release -p tz-bench -- run
+```
+
+The suite measures analysis DSP, large-playlist SQLite queries, persistent disk
+footprint, and headless TUI idle rendering, including latency, throughput, peak
+live heap, process RSS, database/cache bytes, and binary size. Use
+`--preset ancient` on very old or low-memory hardware. See
+[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) for baseline and comparison guidance.
+
 CI: [`.github/workflows/ci.yml`](.github/workflows/ci.yml) (Windows, Ubuntu,
 macOS, and locked dependency policy).
 
@@ -151,6 +164,7 @@ macOS, and locked dependency policy).
 - [`docs/architecture.md`](docs/architecture.md) — crate boundaries  
 - [`docs/PROGRESS.md`](docs/PROGRESS.md) — implementation status  
 - [`docs/RODIO_EVALUATION.md`](docs/RODIO_EVALUATION.md) — compatibility evidence and recommendation
+- [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) — opt-in performance/resource baselines and comparisons
 - [`docs/tz_player_v2_future_project.md`](docs/tz_player_v2_future_project.md) — long-term vision  
 - [`docs/adr/`](docs/adr/) — decisions  
 - `_ref_tz_player/` — Python reference tree (local)

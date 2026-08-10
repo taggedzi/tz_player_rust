@@ -38,6 +38,10 @@ tz-player (bin)
   └── tz-db                  schema + PlaylistStore + FTS
 ```
 
+`tz-bench` is a development-only executable. It depends on `tz-analysis`,
+`tz-db`, and a feature-gated headless render adapter in `tz-tui`; no production
+crate depends on it, and it is not part of the shipped player binary.
+
 Frontends must not import VLC, Rodio, Symphonia, CPAL, or FFmpeg APIs directly.
 
 ## Runtime flow

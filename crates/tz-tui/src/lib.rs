@@ -3,6 +3,10 @@
 mod theme;
 mod visualizers;
 
+#[cfg(feature = "bench-support")]
+#[doc(hidden)]
+pub mod bench_support;
+
 use std::io::{self, stdout};
 use std::time::{Duration, Instant};
 

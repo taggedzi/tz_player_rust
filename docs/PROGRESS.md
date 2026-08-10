@@ -70,7 +70,13 @@ Investigated Phase 11+ item A (live VLC PCM sampling); measured that `libvlc_med
 ## Remaining (optional / post-parity)
 
 1. Live playback-backend PCM sampling (true oscilloscope-class visualizers)
-2. Perf benches vs Python
+2. Perf comparison vs Python and live playback resource sampling. The Rust
+   workspace now has an opt-in, schema-compatible benchmark foundation for DSP,
+   large-playlist DB queries, persistent disk footprint, headless TUI idle
+   rendering, peak live heap, and process memory (`cargo run --release -p
+   tz-bench -- run`; use `--preset ancient` on constrained hardware; see
+   `docs/BENCHMARKS.md`). Shared-corpus cross-language and VLC/Rodio
+   CPU/RSS/battery runs remain.
 3. Headless control server / multi-process appliance (`tz-control` IPC)
 4. Sidecar cover art, Python data import, engine upgrades (gapless/EQ/devices)
 5. Slim custom FFmpeg (analysis packaging), voice/appliance features (future brief)

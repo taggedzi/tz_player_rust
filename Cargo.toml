@@ -8,6 +8,7 @@ members = [
     "crates/tz-control",
     "crates/tz-db",
     "crates/tz-tui",
+    "crates/tz-bench",
 ]
 default-members = ["crates/tz-player"]
 
