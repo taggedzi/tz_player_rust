@@ -7,7 +7,7 @@ source_sha256 = "de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558
 source_md5 = "8a5e3d530be908235511f585ccaceafd"
 ffmpeg_release_commit = "7.1.5"
 patch = "patches/0001-speex-frame-size.patch"
-patch_sha256 = "eea0d6b95d92e84e70884dad960759bc73a4c6bca9052908190e8bf9d10bcd75"
+patch_sha256 = "e8ff2c7552575f714bd6d5f81f036b1eb4930b3049e7ba288f3042554d1dae35"
 configure = [
   "--disable-gpl",
   "--disable-nonfree",

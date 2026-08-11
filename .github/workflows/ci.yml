@@ -188,7 +188,9 @@ jobs:
       - name: Install release notice generator
         env:
           RUSTFLAGS: ''
-        run: cargo install cargo-about --version 0.9.1 --locked --features cli
+        run: |
+          cargo install cargo-deny --version 0.20.2 --locked
+          cargo install cargo-about --version 0.9.1 --locked --features cli
 
       - name: Build audited release archive
         shell: pwsh
