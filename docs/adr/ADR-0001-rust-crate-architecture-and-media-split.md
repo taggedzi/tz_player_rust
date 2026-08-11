@@ -1,6 +1,6 @@
 # ADR-0001 — Rust crate architecture and media split
 
-- Status: Accepted
+- Status: Superseded for audio-engine/backend conclusions by ADR-0004
 - Date: 2026-04-07
 
 ## Context

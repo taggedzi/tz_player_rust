@@ -208,7 +208,7 @@ fn run(args: RunArgs) -> Result<(), Box<dyn Error>> {
         suite_config.measure.target_sample_time.as_millis()
     );
     println!(
-        "Rust heap allocation counts exclude native allocations made inside SQLite, VLC, and audio drivers."
+        "Rust heap allocation counts exclude native allocations made inside SQLite, packaged FFmpeg, and audio drivers."
     );
     print_table_header();
 

@@ -1,5 +1,9 @@
 # tz-player Python → Rust Conversion Plan
 
+> **Historical plan — audio conclusions superseded 2026-08-11.** ADR-0004 and
+> `AUDIO_ENGINE_MIGRATION_RESULTS.md` define the current Audio/Fake architecture;
+> VLC and system-FFmpeg setup below are retained only as conversion evidence.
+
 **Status:** v1 parity largely complete; this document is the durable plan reference  
 **Last updated:** 2026-08-10
 **Audience:** humans and AIs continuing the rewrite or post-parity work  

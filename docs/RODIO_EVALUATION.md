@@ -1,5 +1,9 @@
 # Rodio Backend Compatibility Evaluation
 
+> **Historical evaluation — superseded 2026-08-11.** Its evidence informed
+> ADR-0004, which adopted the composite Audio engine and removed VLC. The
+> recommendation below is preserved as the decision's pre-migration baseline.
+
 Date: 2026-08-10
 Decision owner: repository maintainer
 Implementation baseline: `b876731`

@@ -122,7 +122,7 @@ corpus and separate controlled runs.
 - Peak-live metrics track the largest increase in live Rust heap bytes above
   the sample's starting point. This distinguishes temporary working memory
   from cumulative allocation churn.
-- SQLite, VLC, Rodio, operating-system audio, and other native code may allocate
+- SQLite, packaged FFmpeg, Rodio/CPAL, operating-system audio, and other native code may allocate
   outside Rust's allocator. Those allocations are not attributed per operation.
 - Resident-memory snapshots cover the entire benchmark process, including the
   runner and fixtures. Compare only runs with the same selected scenarios.
@@ -131,8 +131,8 @@ corpus and separate controlled runs.
   four-minute track and reports exact bytes plus bytes/audio-minute.
 - The projected cache size for 1,000 four-minute tracks is a linear planning
   estimate. SQLite page packing and real track lengths will change the result.
-- Release player size excludes external VLC/FFmpeg installs, music, config,
-  logs, and platform packaging overhead.
+- Release player size excludes the separately packaged helper/FFmpeg libraries,
+  music, config, logs, and platform packaging overhead.
 - Hosted CI machines are noisy, so CI compiles and tests the harness but does
   not enforce timing thresholds. Record baselines on representative hardware.
 - Battery and real playback CPU/RSS need longer OS-level observations with the

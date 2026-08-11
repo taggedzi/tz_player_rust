@@ -17,12 +17,9 @@ use crate::state::{load_state_with_notice, save_state, AppState};
 use crate::terminal::terminal_safe;
 
 const STATUS_TTL: Duration = Duration::from_secs(4);
-const VLC_START_ATTEMPTS: usize = 3;
-
 fn real_backend_start_attempts(backend: BackendKind) -> usize {
     match backend {
-        BackendKind::Vlc => VLC_START_ATTEMPTS,
-        BackendKind::Rodio | BackendKind::Fake => 1,
+        BackendKind::Audio | BackendKind::Fake => 1,
     }
 }
 
@@ -43,8 +40,7 @@ fn resolve_visualizer_levels(
 
 fn backend_fallback_message(backend: BackendKind, attempts: usize, details: &str) -> String {
     let label = match backend {
-        BackendKind::Vlc => "VLC",
-        BackendKind::Rodio => "Rodio",
+        BackendKind::Audio => "Audio",
         BackendKind::Fake => "Fake",
     };
     let attempt_word = if attempts == 1 { "attempt" } else { "attempts" };
@@ -175,7 +171,7 @@ pub async fn open_runtime(
     if let Some(kind) = backend_override {
         app_state.playback_backend = kind.as_str().into();
     }
-    let backend = BackendKind::parse(&app_state.playback_backend).unwrap_or(BackendKind::Vlc);
+    let backend = BackendKind::parse(&app_state.playback_backend).unwrap_or(BackendKind::Audio);
     let playlist_sort = PlaylistSort::parse(&app_state.playlist_sort).unwrap_or_default();
     app_state.playlist_sort = playlist_sort.as_str().into();
 
@@ -1494,7 +1490,7 @@ impl AppRuntime {
     }
 
     /// Surface a player-layer failure at the right severity: only backend
-    /// (VLC/libVLC) failures actually disrupt playback and persist until
+    /// Audio backend failures actually disrupt playback and persist until
     /// dismissed; data-layer failures (missing/unreadable track row) are
     /// quiet, auto-clearing warnings.
     fn report_player_error(&mut self, e: PlayerError) {
@@ -1833,6 +1829,8 @@ fn is_media_extension(path: &Path) -> bool {
             .to_ascii_lowercase()
             .as_str(),
         "mp3"
+            | "mp1"
+            | "mp2"
             | "flac"
             | "wav"
             | "ogg"
@@ -1840,6 +1838,7 @@ fn is_media_extension(path: &Path) -> bool {
             | "m4a"
             | "aac"
             | "wma"
+            | "asf"
             | "aiff"
             | "aif"
             | "ape"
@@ -1847,14 +1846,14 @@ fn is_media_extension(path: &Path) -> bool {
             | "mp4"
             | "m4b"
             | "mka"
+            | "webm"
             | "ac3"
+            | "eac3"
             | "dts"
             | "mpc"
             | "tta"
             | "spx"
             | "caf"
-            | "mid"
-            | "midi"
     )
 }
 
@@ -1876,8 +1875,7 @@ mod tests {
 
     #[test]
     fn real_backends_use_backend_specific_startup_attempts() {
-        assert_eq!(real_backend_start_attempts(BackendKind::Vlc), 3);
-        assert_eq!(real_backend_start_attempts(BackendKind::Rodio), 1);
+        assert_eq!(real_backend_start_attempts(BackendKind::Audio), 1);
         assert_eq!(real_backend_start_attempts(BackendKind::Fake), 1);
     }
 
@@ -1906,10 +1904,10 @@ mod tests {
 
     #[test]
     fn rodio_fallback_notice_names_requested_and_effective_backends() {
-        let notice = backend_fallback_message(BackendKind::Rodio, 1, "no output device");
+        let notice = backend_fallback_message(BackendKind::Audio, 1, "no output device");
 
-        assert!(notice.contains("Rodio failed after 1 attempt"));
-        assert!(notice.contains("requested rodio"));
+        assert!(notice.contains("Audio failed after 1 attempt"));
+        assert!(notice.contains("requested audio"));
         assert!(notice.contains("using fake backend"));
     }
 
@@ -1946,15 +1944,19 @@ mod tests {
     }
 
     #[test]
-    fn recognizes_additional_vlc_supported_extensions() {
+    fn recognizes_additional_audio_extensions() {
         for ext in [
-            "mp4", "m4b", "mka", "ac3", "dts", "mpc", "tta", "spx", "caf", "mid", "midi",
+            "mp1", "mp2", "mp4", "m4b", "mka", "webm", "ac3", "eac3", "dts", "asf", "mpc", "tta",
+            "spx", "caf",
         ] {
             let path = Path::new("track").with_extension(ext);
             assert!(
                 is_media_extension(&path),
                 "expected {ext} to be recognized as a media extension"
             );
+        }
+        for ext in ["mid", "midi"] {
+            assert!(!is_media_extension(&Path::new("track").with_extension(ext)));
         }
     }
 

@@ -26,7 +26,7 @@ pub struct EnvelopeAnalysisResult {
     pub points: Vec<(u64, f32, f32)>,
 }
 
-/// Analysis-path errors (never fatal to VLC playback).
+/// Analysis-path errors (never fatal to active playback).
 #[derive(Debug, thiserror::Error)]
 pub enum AnalysisError {
     #[error("file not found: {0}")]
@@ -34,9 +34,6 @@ pub enum AnalysisError {
 
     #[error("decode failed: {0}")]
     Decode(String),
-
-    #[error("FFmpeg unavailable")]
-    FfmpegUnavailable,
 
     #[error("analysis resource limit exceeded: {0}")]
     ResourceLimit(String),

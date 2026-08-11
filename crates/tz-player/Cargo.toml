@@ -16,6 +16,7 @@ path = "src/main.rs"
 tz-core.workspace = true
 tz-playback.workspace = true
 tz-analysis.workspace = true
+tz-audio.workspace = true
 tz-control.workspace = true
 tz-db.workspace = true
 tz-tui.workspace = true

@@ -1,73 +1,60 @@
-# tz-player Rust Specification (parity v1)
+# tz-player Rust specification (parity v1)
 
-Derived from the Python project `SPEC.md` with media roles made explicit.
+## Purpose
 
-## 1. Purpose
+A local-first, keyboard-first terminal music player with persistent playlists,
+metadata, visualizers, and a headless-ready core.
 
-Local-first terminal music player with a keyboard-first TUI.
-
-## 2. Media policy
+## Media policy
 
 | Concern | Implementation |
-|---------|----------------|
-| Playback | VLC / libVLC (`--backend vlc`, default) |
-| Experimental playback | Rodio / Symphonia / system audio (`--backend rodio`) |
+|---|---|
+| Playback | Composite Audio backend (`--backend audio`, default) |
+| Native route | Streaming Symphonia decoder in process |
+| Compatibility route | Package-relative `tz-audio-decoder` + minimal shared FFmpeg 7.1.5 |
 | Fallback / CI | Fake backend (`--backend fake`) |
-| Analysis for visualizers | FFmpeg (optional) + native WAV |
-| Custom minimal FFmpeg | Future; analysis path only |
+| Analysis | Same bounded streaming PCM layer; no system executable |
 
-## 3. In scope (parity)
+There is no VLC backend and no system FFmpeg dependency. `rodio` is a temporary
+alias for Audio; `vlc` is accepted only to emit the removal message. Content
+probing selects native versus helper. The tested format policy is documented in
+`usage.md` and the exact implementation evidence in
+`AUDIO_ENGINE_MIGRATION_RESULTS.md`.
 
-- Playlist management (SQLite)
-- Playback via pluggable backend (VLC + experimental Rodio + fake)
-- Keyboard-first TUI (ratatui)
-- Persistent state (volume, speed, repeat, shuffle, backend, visualizer)
-- Cached metadata
-- Visualizer host + built-in plugins
-- Lazy analysis caches (envelope, spectrum, beat, waveform)
-- `doctor` and `setup` CLI
-- Structured internal command API (headless-ready)
+## In scope
 
-## 4. Out of scope (parity v1)
+- SQLite playlist and staged playlist editing.
+- Play/pause/stop/seek, volume, 0.5x–4.0x speed, repeat, and shuffle.
+- Keyboard/mouse terminal UI and persistent state.
+- Cached metadata and 26 built-in visualizers.
+- Lazy envelope, spectrum, beat, and waveform caches.
+- Live 50 ms stereo levels from decoded playback PCM.
+- `doctor`, `setup`, package integrity diagnostics, and structured commands.
+- Bounded/cancellable native and helper decoding of local files.
 
-- Streaming services
-- Multi-user/network sync
-- Remote control / web UI (later)
-- Voice / local AI (later)
-- Replacing VLC with FFmpeg for listening
-- Promoting Rodio to the default without a separate evaluated decision
-- Python visualizer plugin compatibility
+Speed changes pitch; pitch-preserving stretching is out of scope.
 
-## 5. Workflows
+## Out of scope
 
-Same acceptance intent as Python WF-01..WF-07:
+- Streaming services, URL media, or network codec protocols.
+- Multi-user/network sync, remote web UI, voice, and local AI.
+- Python visualizer plugin compatibility.
+- Gapless playback, EQ, and explicit output-device selection.
 
-1. Launch and recover state  
-2. Navigate playlist  
-3. Playback control  
-4. Find/search focus  
-5. Playlist editing  
-6. Visualization  
-7. Runtime config and diagnostics  
+## Workflows and configuration
 
-## 6. Speed limits
+The parity acceptance workflows remain launch/state recovery, playlist
+navigation/editing, playback control, search, visualization, and diagnostics.
+Configuration precedence is current-run CLI, persisted state, then defaults.
 
-Playback speed clamp: **0.5x – 4.0x** (step 0.25).
-
-Rodio rate changes also change pitch. Pitch-preserving time stretching is out
-of scope for the parity contract.
-
-## 7. Config precedence
-
-1. CLI flags for current run  
-2. Persisted state  
-3. Built-in defaults  
-
-## 8. Quality gates
+## Quality gates
 
 - `cargo fmt --all -- --check`
 - `cargo check --workspace --all-targets --locked`
 - `cargo clippy --workspace --all-targets --locked -- -D warnings`
 - `cargo test --workspace --locked`
 - `cargo audit`
-- `cargo deny --locked check advisories bans licenses sources`
+- `cargo deny --locked --workspace --all-features check advisories bans licenses sources`
+- `./scripts/check-distribution-licenses.ps1`
+- `./scripts/package-release.ps1`
+- `./scripts/test-staged-package.ps1 -Archive <package>`

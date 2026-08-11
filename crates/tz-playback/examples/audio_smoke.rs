@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-use tz_playback::{probe_rodio_output, BackendStatus, PlaybackBackend, RodioPlaybackBackend};
+use tz_playback::{probe_audio_output, AudioPlaybackBackend, BackendStatus, PlaybackBackend};
 
-const USAGE: &str = "Usage:\n  rodio_smoke --startup-only\n  rodio_smoke <local-media-file>";
+const USAGE: &str = "Usage:\n  audio_smoke --startup-only\n  audio_smoke <local-media-file>";
 
 #[derive(Debug, PartialEq, Eq)]
 enum Mode {
@@ -57,7 +57,7 @@ async fn main() -> ExitCode {
 }
 
 fn startup_only() -> Result<(), String> {
-    let info = probe_rodio_output()?;
+    let info = probe_audio_output()?;
     println!(
         "Rodio default output ready: {}",
         terminal_safe(info.to_string())
@@ -71,7 +71,7 @@ async fn play_file(path: &Path) -> Result<(), String> {
         return Err(format!("media file does not exist: {}", safe_path(path)));
     }
 
-    let mut backend = RodioPlaybackBackend::new();
+    let mut backend = AudioPlaybackBackend::new();
     backend.start().await.map_err(|error| error.to_string())?;
     if let Some(info) = backend.output_info().await {
         println!("Rodio default output: {}", terminal_safe(info.to_string()));

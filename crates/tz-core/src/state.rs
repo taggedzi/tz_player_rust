@@ -20,7 +20,8 @@ pub struct AppState {
     /// Non-destructive playlist view order: playlist, track, artist, or album.
     #[serde(default = "default_playlist_sort")]
     pub playlist_sort: String,
-    /// Playback backend: `"vlc"` (default), `"rodio"`, or `"fake"`.
+    /// Playback backend: `"audio"` (default) or `"fake"`.
+    #[serde(default = "default_backend")]
     pub playback_backend: String,
     pub visualizer_id: Option<String>,
     pub visualizer_fps: u32,
@@ -44,7 +45,7 @@ impl Default for AppState {
             repeat_mode: "off".into(),
             shuffle: false,
             playlist_sort: default_playlist_sort(),
-            playback_backend: "vlc".into(),
+            playback_backend: "audio".into(),
             visualizer_id: None,
             visualizer_fps: 10,
             visualizer_responsiveness_profile: "balanced".into(),
@@ -81,9 +82,8 @@ impl AppState {
         }
         let backend = self.playback_backend.to_ascii_lowercase();
         self.playback_backend = match backend.as_str() {
-            "rodio" => "rodio".into(),
             "fake" => "fake".into(),
-            _ => "vlc".into(),
+            _ => "audio".into(),
         };
         self.playlist_sort = PlaylistSort::parse(&self.playlist_sort)
             .unwrap_or_default()
@@ -95,6 +95,10 @@ impl AppState {
 
 fn default_playlist_sort() -> String {
     PlaylistSort::Playlist.as_str().into()
+}
+
+fn default_backend() -> String {
+    "audio".into()
 }
 
 /// Load state from disk, or defaults if missing/invalid. Returns optional user notice.
@@ -174,14 +178,14 @@ mod tests {
         let state = AppState {
             volume: 0.8,
             shuffle: true,
-            playback_backend: "vlc".into(),
+            playback_backend: "audio".into(),
             ..Default::default()
         };
         save_state(&path, &state).unwrap();
         let loaded = load_state(&path);
         assert_eq!(loaded.volume, 0.8);
         assert!(loaded.shuffle);
-        assert_eq!(loaded.playback_backend, "vlc");
+        assert_eq!(loaded.playback_backend, "audio");
         let _ = fs::remove_file(&path);
     }
 
@@ -191,7 +195,7 @@ mod tests {
         let _ = fs::remove_file(&path);
         let (state, notice) = load_state_with_notice(&path);
         assert!(notice.is_none());
-        assert_eq!(state.playback_backend, "vlc");
+        assert_eq!(state.playback_backend, "audio");
     }
 
     #[test]
@@ -206,14 +210,15 @@ mod tests {
 
     #[test]
     fn all_backend_values_sanitize_and_round_trip() {
-        for backend in ["vlc", "rodio", "fake"] {
+        for backend in ["vlc", "rodio", "audio", "fake"] {
             let path = temp_state();
             let state = AppState {
                 playback_backend: backend.to_ascii_uppercase(),
                 ..Default::default()
             };
             save_state(&path, &state).unwrap();
-            assert_eq!(load_state(&path).playback_backend, backend);
+            let expected = if backend == "fake" { "fake" } else { "audio" };
+            assert_eq!(load_state(&path).playback_backend, expected);
             let _ = fs::remove_file(path);
         }
 
@@ -221,7 +226,7 @@ mod tests {
             playback_backend: "removed-backend".into(),
             ..Default::default()
         };
-        assert_eq!(state.sanitize().playback_backend, "vlc");
+        assert_eq!(state.sanitize().playback_backend, "audio");
     }
 
     #[test]

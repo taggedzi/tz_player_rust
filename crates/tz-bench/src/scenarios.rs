@@ -425,7 +425,7 @@ pub fn disk(config: SuiteConfig) -> Result<ScenarioResult, String> {
                 .into(),
             "The library projection is directional; SQLite page packing and track durations vary."
                 .into(),
-            "Player binary size excludes external VLC, FFmpeg, configuration, and music files."
+            "Player binary size excludes the separately packaged audio helper/libraries, configuration, and music files."
                 .into(),
         ],
     })

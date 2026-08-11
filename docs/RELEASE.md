@@ -1,126 +1,95 @@
 # Release checklist (tz-player Rust)
 
-Use this when cutting a local or public release of the `tz-player` binary.
-
 ## Preconditions
 
-- [ ] On a clean git tree (or only intentional release bumps)
+- [ ] Tree contains only intentional release changes.
 - [ ] `cargo fmt --all -- --check`
 - [ ] `cargo check --workspace --all-targets --locked`
 - [ ] `cargo clippy --workspace --all-targets --locked -- -D warnings`
 - [ ] `cargo test --workspace --locked`
-- [ ] `cargo audit` (every warning is absent or matches an unexpired exception
-      in `docs/SECURITY.md` and `deny.toml`)
-- [ ] `cargo deny --locked check advisories bans licenses sources`
-- [ ] `./scripts/check-distribution-licenses.ps1` (license policy, current
-      third-party report, and dependency `NOTICE` scan)
-- [ ] No temporary security exception is past its documented expiration date
-- [ ] Malicious-media regression tests pass:
-      `cargo test -p tz-analysis decode::tests`,
-      `cargo test -p tz-core metadata::tests`, and
-      `cargo test -p tz-tui cover_ascii::tests`
-- [ ] Manual smoke: `cargo run -p tz-player -- doctor`
-- [ ] Windows VLC loader smoke (no audio):
-      `cargo run -p tz-playback --example vlc_smoke -- --startup-only`
-- [ ] Rodio format matrix:
-      `cargo test -p tz-playback --test rodio_formats --locked`
-- [ ] Rodio output smoke (no audio):
-      `cargo run -p tz-playback --example rodio_smoke -- --startup-only`
-- [ ] Rodio output-device tests (muted; requires a usable default device):
-      `$env:TZ_PLAYER_RODIO_OUTPUT_TESTS='1'; cargo test -p tz-playback rodio::tests --locked -- --test-threads=1; cargo test -p tz-core rodio_real_output --locked`
-- [ ] Manual smoke: add a track, play with VLC, cycle visualizers (`z`), quit, re-open (state restores)
-- [ ] Theme smoke: copy `docs/theme.example.json` to the `theme.json` path
-      reported by `tz-player paths`, verify palette/formatting, then remove it
-- [ ] Mouse smoke: click/select and double-click/play a row, wheel both main
-      and editor lists, drag time/volume/speed, then repeat via keyboard
-- [ ] Manual Rodio smoke with an explicit supported local file; verify pause,
-      forward/backward seek, 0.5x/1x/2x/4x, live visualizer response, stop, and
-      natural next-track advance
+- [ ] `cargo audit`
+- [ ] `cargo deny --locked --workspace --all-features check advisories bans licenses sources`
+- [ ] `./scripts/check-distribution-licenses.ps1`
+- [ ] No security exception in `docs/SECURITY.md` is expired.
+- [ ] Exact native helper tests pass against the audited SDK:
+      `cargo test -p tz-audio-decoder --features ffmpeg-native --locked`.
+- [ ] Theme, mouse, state restore, playlist editing, and malformed-media
+      regression smokes pass.
 
-## Build and package
+## Build the native SDK and package
+
+The pinned source identity is FFmpeg 7.1.5 with SHA-256
+`de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f`.
+Prerequisites are in `native/ffmpeg/README.md`.
 
 ```powershell
+# Windows
+./native/ffmpeg/build.ps1
+
+# Linux/macOS
+./native/ffmpeg/build.sh
+
+# All targets, after the target-local SDK exists
 ./scripts/package-release.ps1
 ```
 
-The script runs the distribution-license gate, builds with `--locked`, and
-creates an archive containing the executable, `LICENSE`,
-`THIRD_PARTY_LICENSES.html`, `NATIVE_DEPENDENCIES.md`,
-`licenses/LGPL-2.1.txt`, and `README.md`. Distribute that archive as a unit; do
-not attach the bare executable by itself.
+The packager builds player/helper with `--release --locked`, audits dynamic
+dependencies, validates helper capabilities against the manifest, stages all
+licenses/source metadata, and emits:
 
-Build output used by the packager:
+- `target/dist/tz-player-<version>-<target>.(zip|tar.gz)` and `.sha256`;
+- `target/dist/ffmpeg-7.1.5.tar.xz` and `.sha256`;
+- `target/dist/ffmpeg-7.1.5-tz-player.patch` and `.sha256`.
 
-| OS | Path |
-|----|------|
-| Windows | `target/release/tz-player.exe` |
-| Unix | `target/release/tz-player` |
+Never publish a player-only archive. Put the matching source archive, patch,
+and their checksums beside every binary package.
 
-Optional smoke with the release binary:
+## Clean-package acceptance
 
 ```powershell
-.\target\release\tz-player.exe doctor
-.\target\release\tz-player.exe --backend rodio doctor
-.\target\release\tz-player.exe --backend fake
+./scripts/test-staged-package.ps1 -Archive target/dist/<binary-package>
 ```
 
-## Runtime dependencies (end user)
+The archive-level smoke extracts under a Unicode/space path, runs the packaged
+helper and hardware-independent doctor, proves fake `ffmpeg`/VLC commands on
+`PATH` are ignored, removes each FFmpeg library and metadata file in turn to
+prove fail-closed behavior, restores them, and reruns doctor.
 
-| Dependency | Required? | Role |
-|------------|-----------|------|
-| **VLC 3.x** (complete libVLC install) | Default real backend | Playback; library, core, and plugins are loaded dynamically; other majors fail closed |
-| **Rodio/Symphonia/CPAL** | Built into release | Experimental real backend; uses the default OS output device and its documented format set |
-| **FFmpeg** on `PATH` | Optional | First matching executable runs for offline spectrum/beat/waveform analysis |
-| Terminal with color | Recommended | Colored visualizers (still usable monochrome) |
+For every supported release target, also verify from the extracted archive:
 
-Linux source/CI builds need ALSA development files (for example,
-`libasound2-dev` on Ubuntu); end users of a built binary need the normal system
-audio runtime. Windows and macOS need no separate Rodio codec installation.
+- [ ] TUI launches and exits cleanly.
+- [ ] One native fixture plays, seeks, stops, and naturally advances.
+- [ ] One helper-only fixture plays, seeks, stops, and naturally advances.
+- [ ] Both fixtures create envelope/spectrum/beat/waveform cache products.
+- [ ] Repeat, shuffle, pause/resume, volume, speed, replacement, and shutdown.
+- [ ] Native dependency inspection reports only packaged/system libraries.
+- [ ] Human audible native and helper-only smoke on representative hardware.
 
-Install VLC and FFmpeg only from a trusted package manager or verified
-distribution channel. Do not release with an unexpected FFmpeg path,
-`VLC_PLUGIN_PATH`, LibVLC path, or VLC major. Run `tz-player doctor` on each
-target OS for VLC and `tz-player --backend rodio doctor` for Rodio. Record the
-discovered VLC location, Rodio output configuration, FFmpeg availability, and
-whether playback was audible or startup-only. Separately record the package
-versions and the first `ffmpeg` on `PATH` in the release notes. See
-`docs/SECURITY.md` for the complete trust model and analysis/cover-art limits.
+Hosted CI builds and smoke-tests Windows x86-64, Linux x86-64, and macOS ARM64.
+A target is supported only after its CI package and human audible checks are
+recorded; otherwise label it unverified in release notes.
 
-## Data locations
+## End-user runtime
 
-Rust build uses identity **`tz-player-rs`** (separate from Python `tz-player`):
+Users need the operating system's normal audio runtime and a color terminal.
+They do not install VLC or FFmpeg. The `audio/`, `licenses/`, notice, and source
+metadata files are part of the application package and must remain intact.
+Run `tz-player doctor` after extraction.
 
-| Item | Typical Windows path |
-|------|----------------------|
-| Database | `%LOCALAPPDATA%\taggedzi\tz-player-rs\data\tz-player.sqlite3` |
-| State | `%APPDATA%\taggedzi\tz-player-rs\config\state.json` |
-| Optional TUI theme | `%APPDATA%\taggedzi\tz-player-rs\config\theme.json` |
-| Logs | under data dir `logs/` |
+Linux source builds need ALSA development files such as `libasound2-dev`; this
+is a build requirement, not an extra codec installation.
 
-Exact paths: `tz-player paths`.
+## Version, publish, and rollback
 
-## Version
+1. Bump the workspace/player version and update migration results/package hashes.
+2. Commit intentional release changes and tag `vX.Y.Z`.
+3. Attach every binary archive/checksum and matching FFmpeg source/checksum.
+4. Include the exact source/configuration/license statement and audible-smoke
+   target matrix in release notes.
 
-Binary version comes from `crates/tz-player/Cargo.toml` (`--version` / doctor banner).
+Rust data uses the separate `tz-player-rs` identity; exact paths come from
+`tz-player paths`. Roll back with a previous complete package. SQLite schema is
+version 8, so do not mix it with the Python application's database.
 
-Bump that crate version (and workspace if desired) before tagging.
-
-## Tag / publish (optional)
-
-1. Update `docs/PROGRESS.md` status line if needed.
-2. Commit release notes / version bump.
-3. Tag `vX.Y.Z` and push.
-4. Attach the archive from `target/dist/` + short install notes (VLC + optional
-   FFmpeg).
-
-## Known limitations (document in release notes)
-
-- Fake backend is for CI and no-audio diagnostics; it never produces real audio.
-- Rodio is experimental, has a narrower format set than VLC, and changes pitch
-  with playback speed.
-- Analysis is offline/cache-based, not a live PCM oscilloscope (see ADR-0009 intent).
-- Headless control server and multi-process appliance remain deferred.
-
-## Rollback
-
-Delete or rename the data/state paths above, or restore a previous binary. Schema is SQLite v8; avoid mixing with Python DB files.
+Known product limitations: Fake emits no audio; speed changes pitch; detailed
+analysis is cache-based; future headless/multi-process control remains deferred.

@@ -1,7 +1,7 @@
 //! Structured command API for frontends (TUI, future headless/remote).
 //!
 //! All UIs should talk to the player through commands + snapshots, not by
-//! reaching into VLC or the database directly.
+//! reaching into audio-engine internals or the database directly.
 
 use serde::{Deserialize, Serialize};
 

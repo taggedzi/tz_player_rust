@@ -1,92 +1,66 @@
 # Distribution licensing
 
-This document records the project's dependency-license policy and the release
-procedure that preserves third-party terms. It is an engineering compliance
-check, not legal advice.
+This is an engineering compliance policy, not legal advice.
 
 ## Current conclusion
 
-The source written for `tz-player` is MIT-licensed. The dependency graph locked
-in `Cargo.lock` passes `cargo-deny`'s allowlist for the release build. A compiled
-binary is not, however, composed exclusively of MIT code: third-party
-components retain their own licenses.
+Project-authored source is MIT-licensed. Rust dependencies retain their own
+terms; the locked all-feature/all-target graph passes the reviewed
+`cargo-deny` allowlist. `THIRD_PARTY_LICENSES.html` records exact crate versions,
+license texts, and source links, including Apache-2.0, MPL-2.0, BSD, ISC,
+Unicode, Zlib, and the WTFPL expression declared by `ffmpeg-next` /
+`ffmpeg-sys-next` 8.1.0.
 
-The main non-MIT-only cases in the current release graph are:
+Release packages also dynamically link `tz-audio-decoder` to a project-built,
+minimal LGPL FFmpeg 7.1.5 runtime (`avcodec`, `avformat`, `avutil`, and
+`swresample`). It is configured without GPL/nonfree code and without external
+libraries, programs, network, protocols, devices, filters, encoders, or muxers.
+The package includes the LGPL text, exact build/configuration/component records,
+patch record, source offer, and recognizable shared-library names.
 
-- `cpal` and `hound`, licensed under Apache-2.0;
-- `option-ext` and the embedded Symphonia codec crates, licensed under MPL-2.0;
-- a small number of permissive BSD, ISC, Unicode, and Zlib terms; and
-- the bundled SQLite core, which SQLite publishes as public-domain code.
+Every binary release must publish the verified FFmpeg 7.1.5 source archive,
+the exact `ffmpeg-7.1.5-tz-player.patch`, and both `.sha256` files beside the
+binary archive. See `FFMPEG_SOURCE.md` and `native/ffmpeg/manifest.toml`. Do not distribute a bare player/helper binary or
+substitute a third-party prebuilt FFmpeg.
 
-This combination allows `tz-player`'s original code and the larger executable
-to remain under MIT. Distribution must also preserve the third-party terms.
-In particular, MPL-2.0 permits an executable larger work under other terms but
-requires recipients to be told where the MPL-covered source can be obtained.
-`THIRD_PARTY_LICENSES.html` includes the selected license texts and exact,
-version-specific source links for that purpose.
-
-The Linux executable dynamically links the recipient's system ALSA library,
-and the default backend dynamically loads a separately installed libVLC. The
-archive therefore carries `NATIVE_DEPENDENCIES.md` and an LGPL-2.1 license copy
-while not bundling either library. FFmpeg is invoked as a separate executable
-and is not included. Anyone who changes the package to bundle ALSA, VLC,
-FFmpeg, codecs, or plugins must audit those exact builds separately.
+Linux binaries use the recipient's normal system audio runtime (typically
+ALSA through CPAL). System drivers/frameworks are not bundled. SQLite core is
+compiled through `rusqlite`'s bundled feature and is published upstream as
+public-domain code.
 
 ## Automated checks
-
-Install the same tools pinned in CI:
 
 ```powershell
 cargo install cargo-deny --version 0.20.2 --locked
 cargo install cargo-about --version 0.9.1 --locked --features cli
-```
-
-Run the distribution audit:
-
-```powershell
 ./scripts/check-distribution-licenses.ps1
 ```
 
-The check:
+The gate checks the workspace/all-feature dependency graph across supported
+desktop targets, rejects unapproved licenses and forbidden FFmpeg flags,
+regenerates and compares the Rust notice report, scans required notices, and
+validates source/build metadata. A green result confirms policy consistency;
+it does not relicense third-party code or replace a maintainer/legal review.
 
-1. rejects license expressions outside `deny.toml`;
-2. regenerates the report from `Cargo.lock` for x86-64 and ARM64 Windows,
-   Linux, and macOS targets and fails if `THIRD_PARTY_LICENSES.html` is stale;
-3. fails if a shipped dependency adds a separate `NOTICE` file requiring
-   manual preservation review; and
-4. requires the native-dependency notice and LGPL license copy used by Linux
-   ALSA and the optional libVLC runtime boundary.
-
-When dependencies change, regenerate and review the report:
+When dependencies change, regenerate and inspect the HTML diff:
 
 ```powershell
-cargo about generate --locked `
-  --manifest-path crates/tz-player/Cargo.toml `
-  about.hbs `
+cargo about generate --locked --workspace --all-features `
+  --manifest-path Cargo.toml about.hbs `
   --output-file THIRD_PARTY_LICENSES.html
 ./scripts/check-distribution-licenses.ps1
 ```
 
-Do not treat a green automated check as permission to relabel third-party code
-as MIT. It means the declared terms match the reviewed policy and the required
-notice bundle is current. Review any new license, native library, media asset,
-font, codec, or separate `NOTICE` file before release.
-
 ## Release format
-
-Create a release archive with:
 
 ```powershell
 ./scripts/package-release.ps1
+./scripts/test-staged-package.ps1 -Archive target/dist/<package>
 ```
 
-For cross-compilation, pass the Cargo target explicitly, for example
-`-Target x86_64-pc-windows-msvc`. The archive contains the executable plus:
-
-- `LICENSE` for `tz-player`'s MIT-licensed code;
-- `THIRD_PARTY_LICENSES.html` for embedded Rust components;
-- `NATIVE_DEPENDENCIES.md` and `licenses/LGPL-2.1.txt` for native/runtime
-  boundaries; and
-- `README.md` with runtime dependency and usage information.
-
-Distribute the archive as a unit. Do not publish the executable by itself.
+The package contains the player, helper, four versioned FFmpeg libraries,
+`LICENSE`, `THIRD_PARTY_LICENSES.html`, `NATIVE_DEPENDENCIES.md`,
+`FFMPEG_SOURCE.md`, `licenses/LGPL-2.1-or-later.txt`, and the generated FFmpeg
+build/component/configuration/change records. The packager emits checksums for
+the binary package, matching source archive, and standalone patch. Distribute
+those assets as one release set.

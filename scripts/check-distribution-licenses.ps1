@@ -28,8 +28,10 @@ try {
     foreach ($requiredFile in @(
         'LICENSE',
         'THIRD_PARTY_LICENSES.html',
+        'FFMPEG_SOURCE.md',
         'NATIVE_DEPENDENCIES.md',
-        'licenses/LGPL-2.1.txt'
+        'licenses/LGPL-2.1.txt',
+        'native/ffmpeg/manifest.toml'
     )) {
         if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
             throw "Required distribution notice is missing: $requiredFile"
@@ -41,18 +43,18 @@ try {
         throw "Install the pinned reporter with: cargo install cargo-about --version 0.9.1 --locked --features cli"
     }
 
-    & cargo deny --locked check licenses
+    & cargo deny --locked --workspace --all-features check licenses
     Assert-LastExitCode 'cargo-deny license policy'
 
     $temporaryReport = Join-Path ([IO.Path]::GetTempPath()) ("tz-player-licenses-{0}.html" -f [guid]::NewGuid())
     try {
-        & cargo about generate --locked --manifest-path crates/tz-player/Cargo.toml about.hbs --output-file $temporaryReport
+        & cargo about generate --locked --workspace --all-features --manifest-path Cargo.toml about.hbs --output-file $temporaryReport
         Assert-LastExitCode 'third-party license report generation'
 
         $expectedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath THIRD_PARTY_LICENSES.html).Hash
         $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $temporaryReport).Hash
         if ($expectedHash -ne $actualHash) {
-            throw 'THIRD_PARTY_LICENSES.html is stale. Regenerate it with cargo about generate --locked --manifest-path crates/tz-player/Cargo.toml about.hbs --output-file THIRD_PARTY_LICENSES.html and review the diff.'
+            throw 'THIRD_PARTY_LICENSES.html is stale. Regenerate it with cargo about generate --locked --workspace --all-features --manifest-path Cargo.toml about.hbs --output-file THIRD_PARTY_LICENSES.html and review the diff.'
         }
     }
     finally {

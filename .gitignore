@@ -1,5 +1,7 @@
 # Rust
 /target/
+native/ffmpeg/build/
+native/ffmpeg/sdk/
 **/*.rs.bk
 # Cargo.lock is committed for the binary application workspace
 

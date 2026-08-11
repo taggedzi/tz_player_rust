@@ -30,6 +30,13 @@ Adapted from cargo-about's default template for tz-player.
             components covered by the Mozilla Public License 2.0 is available at
             those links under the MPL-2.0 terms reproduced in this document.
         </p>
+        <p>
+            Binary packages also include a dynamically linked, minimal LGPL
+            FFmpeg 7.1.5 runtime for the package-relative audio helper. Its exact
+            source archive, checksum, configuration, component list, changes,
+            and LGPL text ship with or beside each release as described by
+            FFMPEG_SOURCE.md and NATIVE_DEPENDENCIES.md.
+        </p>
 
         <h2>License overview</h2>
         <ul>
@@ -41,7 +48,7 @@ Adapted from cargo-about's default template for tz-player.
         <h2>License texts and components</h2>
         {{#each licenses}}
         <section>
-            {{#if first_of_kind}}<h3 id="{{id}}">{{name}}</h3>{{/if}}
+{{#if first_of_kind}}            <h3 id="{{id}}">{{name}}</h3>{{/if}}
             <h4>{{name}}</h4>
             <p>Used by:</p>
             <ul>

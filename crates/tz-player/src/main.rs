@@ -8,30 +8,29 @@ use std::sync::Mutex;
 use clap::{Parser, Subcommand, ValueEnum};
 use tracing_subscriber::EnvFilter;
 
-use tz_analysis::ffmpeg_available;
 use tz_core::{
     about_info, app_paths_or_cwd, load_state, open_runtime, save_state, terminal_safe,
     terminal_safe_path, AppState,
 };
 use tz_db::{open_database, SCHEMA_VERSION};
-use tz_playback::{
-    configure_vlc_environment, discover_vlc, probe_rodio_output, BackendKind, RodioOutputInfo,
-};
+use tz_playback::{probe_audio_output, AudioOutputInfo, BackendKind};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Clone, ValueEnum)]
 enum BackendCli {
+    #[value(hide = true)]
     Vlc,
-    Rodio,
+    #[value(name = "audio", alias = "rodio")]
+    Audio,
     Fake,
 }
 
 impl From<BackendCli> for BackendKind {
     fn from(value: BackendCli) -> Self {
         match value {
-            BackendCli::Vlc => BackendKind::Vlc,
-            BackendCli::Rodio => BackendKind::Rodio,
+            BackendCli::Vlc => BackendKind::Audio,
+            BackendCli::Audio => BackendKind::Audio,
             BackendCli::Fake => BackendKind::Fake,
         }
     }
@@ -43,13 +42,12 @@ impl From<BackendCli> for BackendKind {
     version,
     about = "TaggedZ's terminal music player (Rust rewrite)",
     long_about = "Local-first TUI music player.\n\
-                  Playback: VLC/libVLC (default) or experimental Rodio.\n\
-                  Analysis/visualizers: FFmpeg (optional).\n\
-                  See `tz-player doctor` for environment checks."
+                  Playback and analysis: bundled Audio engine (native first, helper second).\n\
+                  See `tz-player doctor` for package checks."
 )]
 struct Cli {
-    /// Playback backend (default: vlc; unavailable real backends fall back to fake)
-    #[arg(long, value_enum, default_value_t = BackendCli::Vlc, global = true)]
+    /// Playback backend (default: audio; unavailable real backends fall back to fake)
+    #[arg(long, value_enum, default_value_t = BackendCli::Audio, global = true)]
     backend: BackendCli,
 
     /// Enable verbose (debug) logging
@@ -70,9 +68,9 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Diagnose the selected playback backend and optional FFmpeg analysis
+    /// Diagnose the selected Audio backend and bundled helper
     Doctor,
-    /// Guided setup notes for VLC, Rodio, and FFmpeg
+    /// Guided setup notes for the bundled Audio engine
     Setup,
     /// Print resolved paths and schema version
     Paths,
@@ -88,15 +86,20 @@ enum Commands {
         #[arg(long, default_value_t = 50)]
         limit: usize,
     },
+    /// Internal extracted-package playback and analysis verifier
+    #[command(hide = true)]
+    PackageSmoke {
+        #[arg(long)]
+        native: Vec<PathBuf>,
+        #[arg(long)]
+        helper: Vec<PathBuf>,
+        #[arg(long)]
+        database: PathBuf,
+    },
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    if matches!(&cli.backend, BackendCli::Vlc) {
-        // VLC_PLUGIN_PATH is process-global. Configure it while startup is
-        // still single-threaded, before Tokio creates its worker threads.
-        configure_vlc_environment();
-    }
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -117,6 +120,11 @@ fn main() -> ExitCode {
 async fn run(cli: Cli) -> ExitCode {
     init_logging(&cli);
     tracing::info!(version = VERSION, "tz-player starting");
+
+    if matches!(cli.backend, BackendCli::Vlc) {
+        eprintln!("VLC was removed from this release; use --backend audio instead.");
+        return ExitCode::from(2);
+    }
 
     match cli.command {
         Some(Commands::Doctor) => cmd_doctor(cli.backend.into()),
@@ -149,6 +157,17 @@ async fn run(cli: Cli) -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some(Commands::PackageSmoke {
+            native,
+            helper,
+            database,
+        }) => match cmd_package_smoke(&native, &helper, &database) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("{}", terminal_safe(error));
+                ExitCode::FAILURE
+            }
+        },
         None => match run_app(cli.backend.into()).await {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
@@ -157,6 +176,66 @@ async fn run(cli: Cli) -> ExitCode {
             }
         },
     }
+}
+
+fn cmd_package_smoke(
+    native: &[PathBuf],
+    helper: &[PathBuf],
+    database: &std::path::Path,
+) -> Result<(), String> {
+    if native.is_empty() && helper.is_empty() {
+        return Err("package smoke requires at least one --native or --helper fixture".into());
+    }
+    let mut helper_underruns = 0_u64;
+    for media in native {
+        let report = tz_playback::package_playback_smoke(media).map_err(|error| {
+            format!(
+                "package playback smoke failed for {}: {error}",
+                media.display()
+            )
+        })?;
+        if report.route != "native" {
+            return Err(format!(
+                "native package fixture {} selected unexpected route: {}",
+                media.display(),
+                report.route
+            ));
+        }
+    }
+    for media in helper {
+        let report = tz_playback::package_playback_smoke(media).map_err(|error| {
+            format!(
+                "package playback smoke failed for {}: {error}",
+                media.display()
+            )
+        })?;
+        if report.route != "bundled-helper" {
+            return Err(format!(
+                "helper package fixture {} selected unexpected route: {}",
+                media.display(),
+                report.route
+            ));
+        }
+        helper_underruns = helper_underruns.saturating_add(report.underruns);
+    }
+
+    let levels = tz_core::LevelService::new(database);
+    for media in native.iter().chain(helper) {
+        levels.ensure_analysis(media)?;
+        if levels.cache_flags(media) != (true, true, true, true) {
+            return Err(format!(
+                "package analysis did not create every cache product for {}",
+                media.display()
+            ));
+        }
+    }
+
+    println!(
+        "Package smoke PASS: native={} fixture(s), helper={} fixture(s), helper underruns={helper_underruns}",
+        native.len(),
+        helper.len(),
+    );
+    Ok(())
 }
 
 async fn run_app(backend: BackendKind) -> Result<(), String> {
@@ -277,67 +356,65 @@ fn cmd_doctor(backend: BackendKind) -> ExitCode {
     println!();
     println!("Media roles:");
     println!("  Playback (listen path): {}", playback_role(backend));
-    println!("  Analysis / visualizers: FFmpeg (optional) + native WAV");
+    println!("  Analysis / visualizers: native Symphonia + bundled helper");
     println!();
 
     let mut ok = true;
-    let mut warns = 0u32;
+    let warns = 0u32;
 
     match backend {
-        BackendKind::Vlc => {
-            println!("[INFO] Selected backend: vlc (default)");
-            let discovery = discover_vlc();
-            if let Some(exe) = &discovery.vlc_executable {
-                println!("[OK]   VLC executable: {}", terminal_safe_path(exe));
-            } else {
-                println!("[WARN] VLC executable not found on PATH / common install paths");
-                warns += 1;
-            }
-            if let Some(dir) = &discovery.libvlc_dir {
-                println!("[OK]   libVLC directory: {}", terminal_safe_path(dir));
-                println!("[OK]   libVLC dynamic load path ready (runtime FFI)");
-            } else {
-                println!("[FAIL] libVLC not found in common install paths");
-                ok = false;
-            }
-            for note in &discovery.notes {
-                println!("       note: {}", terminal_safe(note));
-            }
-        }
-        BackendKind::Rodio => {
-            println!("[INFO] Selected backend: rodio (experimental)");
-            match probe_rodio_output() {
-                Ok(info) => println!("[OK]   Rodio default output: {}", rodio_output_line(&info)),
+        BackendKind::Audio => {
+            println!("[INFO] Selected backend: audio");
+            match probe_audio_output() {
+                Ok(info) => println!("[OK]   Audio default output: {}", audio_output_line(&info)),
                 Err(error) => {
-                    println!("[FAIL] Rodio default output: {}", terminal_safe(error));
+                    println!("[FAIL] Audio default output: {}", terminal_safe(error));
                     ok = false;
                 }
             }
-            println!("[OK]   Rodio format families: {}", rodio_format_families());
-            println!("[INFO] VLC is not required for selected Rodio playback");
+            println!("[OK]   Native format families: {}", rodio_format_families());
+            match doctor_bundled_helper() {
+                Ok(()) => {}
+                Err(error) => {
+                    println!(
+                        "[FAIL] Bundled helper: {}",
+                        terminal_safe(error.to_string())
+                    );
+                    ok = false;
+                }
+            }
+            match package_audio_metadata() {
+                Ok(()) => println!("[OK]   Bundled helper build metadata and source offer"),
+                Err(error) => {
+                    println!("[FAIL] Bundled helper package: {}", terminal_safe(error));
+                    ok = false;
+                }
+            }
         }
         BackendKind::Fake => {
             println!("[INFO] Selected backend: fake (no audio output is opened)");
-            println!("[INFO] VLC and Rodio output are not required for this run");
+            if running_from_distribution() {
+                match doctor_bundled_helper() {
+                    Ok(()) => {}
+                    Err(error) => {
+                        println!(
+                            "[FAIL] Packaged helper: {}",
+                            terminal_safe(error.to_string())
+                        );
+                        ok = false;
+                    }
+                }
+                match package_audio_metadata() {
+                    Ok(()) => println!("[OK]   Packaged helper build metadata and source offer"),
+                    Err(error) => {
+                        println!("[FAIL] Packaged helper package: {}", terminal_safe(error));
+                        ok = false;
+                    }
+                }
+            } else {
+                println!("[INFO] Audio output and bundled helper are not required for this run");
+            }
         }
-    }
-
-    if ffmpeg_available() {
-        println!("[OK]   FFmpeg available (analysis / visualizers)");
-    } else {
-        println!("[WARN] FFmpeg not found — analysis-backed visualizers degrade");
-        match backend {
-            BackendKind::Vlc => {
-                println!("       Selected VLC playback still works; native WAV analysis remains")
-            }
-            BackendKind::Rodio => {
-                println!("       Selected Rodio playback still works; native WAV analysis remains")
-            }
-            BackendKind::Fake => {
-                println!("       Fake transport still works; native WAV analysis remains")
-            }
-        }
-        warns += 1;
     }
 
     let paths = app_paths_or_cwd();
@@ -394,20 +471,82 @@ fn cmd_doctor(backend: BackendKind) -> ExitCode {
     }
 }
 
+fn doctor_bundled_helper() -> Result<(), tz_audio::DecodeError> {
+    let config = tz_audio::helper::HelperConfig::packaged()?;
+    println!(
+        "[OK]   Bundled helper path: {}",
+        terminal_safe_path(&config.executable)
+    );
+    let caps = tz_audio::helper::capabilities(&config)?;
+    let libraries = caps
+        .library_majors
+        .iter()
+        .map(|(name, major)| format!("{name}={major}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    println!(
+        "[OK]   Bundled helper protocol v{}.{} / FFmpeg {} ({})",
+        caps.protocol_major, caps.protocol_minor, caps.ffmpeg_version, caps.ffmpeg_commit
+    );
+    println!("[OK]   FFmpeg library ABI majors: {libraries}");
+    println!(
+        "[OK]   FFmpeg configuration hash: {}",
+        caps.configuration_hash
+    );
+    println!(
+        "[OK]   Helper format families: {}",
+        helper_format_families()
+    );
+    Ok(())
+}
+
+fn running_from_distribution() -> bool {
+    std::env::current_exe().is_ok_and(|executable| {
+        tz_audio::discovery::package_root_path(&executable)
+            .join("audio")
+            .is_dir()
+    })
+}
+
+fn package_audio_metadata() -> Result<(), String> {
+    let location = tz_audio::discovery::resolve_package_helper()?;
+    let required = [
+        location.package_root.join("FFMPEG_SOURCE.md"),
+        location.package_root.join("NATIVE_DEPENDENCIES.md"),
+        location.package_root.join("licenses/LGPL-2.1-or-later.txt"),
+        location.package_root.join("audio/FFMPEG_BUILD.json"),
+        location.package_root.join("audio/FFMPEG_COMPONENTS.json"),
+        location.package_root.join("audio/FFMPEG_CONFIGURE.log"),
+        location.package_root.join("audio/FFMPEG_CHANGES.diff"),
+    ];
+    for path in required {
+        if !path.is_file() {
+            return Err(format!(
+                "required package file is missing: {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn playback_role(backend: BackendKind) -> &'static str {
     match backend {
-        BackendKind::Vlc => "VLC / libVLC (default)",
-        BackendKind::Rodio => "Rodio / Symphonia / system audio (experimental)",
+        BackendKind::Audio => "Audio / Rodio / Symphonia / bundled helper",
         BackendKind::Fake => "Fake transport (no audio)",
     }
 }
 
-fn rodio_output_line(info: &RodioOutputInfo) -> String {
+fn audio_output_line(info: &AudioOutputInfo) -> String {
     terminal_safe(info.to_string())
 }
 
 fn rodio_format_families() -> &'static str {
     "MP1/MP2/MP3, FLAC, WAV/ADPCM, Ogg Vorbis, AAC, ALAC, AIFF, CAF, Matroska/WebM"
+}
+
+fn helper_format_families() -> &'static str {
+    "Ogg Opus, WMA/ASF, Monkey's Audio, WavPack, AC-3, E-AC-3, DTS, Musepack 7/8, TTA, Speex"
 }
 
 fn exe_suffix() -> &'static str {
@@ -422,48 +561,31 @@ fn cmd_setup() {
     println!("tz-player setup  v{VERSION}");
     println!("=========================");
     println!();
-    println!("1) Playback — choose a backend");
-    println!("   VLC (default): broad compatibility; install VLC from");
-    println!("     https://www.videolan.org/vlc/");
-    if cfg!(windows) {
-        println!("     Windows: winget install VideoLAN.VLC");
-    } else if cfg!(target_os = "macos") {
-        println!("     macOS:   brew install --cask vlc");
-    } else {
-        println!("     Linux:   install VLC via your package manager (libvlc + plugins)");
-    }
-    println!("   Rodio (experimental): no VLC codec runtime; select --backend rodio");
+    println!("1) Playback — use the bundled Audio engine");
+    println!("   Native Symphonia decoding is attempted first; supported fallback formats use the package-relative helper.");
     if cfg!(target_os = "linux") {
         println!("     Linux source builds need ALSA development files (libasound2-dev on Ubuntu)");
     }
     println!("   Fake: no-audio testing; select --backend fake");
     println!();
-    println!("2) Analysis — install FFmpeg (optional, for visualizers)");
-    if cfg!(windows) {
-        println!("   Windows: winget install Gyan.FFmpeg");
-    } else if cfg!(target_os = "macos") {
-        println!("   macOS:   brew install ffmpeg");
-    } else {
-        println!("   Linux:   install ffmpeg via your package manager");
-    }
+    println!("2) Analysis — no system FFmpeg installation is required");
     println!();
     println!("3) Build a release binary");
     println!("   cargo build --release -p tz-player");
     println!("   # output: target/release/tz-player{}", exe_suffix());
     println!();
-    println!("4) Verify:  tz-player --backend vlc doctor");
-    println!("             tz-player --backend rodio doctor");
+    println!("4) Verify:  tz-player doctor");
     println!("5) Add music: tz-player add path/to/song.mp3");
-    println!("6) Run: tz-player   (VLC default)");
-    println!("        tz-player --backend rodio");
+    println!("6) Run: tz-player   (Audio default)");
     println!("        tz-player --backend fake   # no audio");
     println!();
     println!("Data lives under a separate identity from the Python app:");
     let paths = app_paths_or_cwd();
     println!("  {}", terminal_safe_path(&paths.data_dir));
     println!();
-    println!("Note: FFmpeg is not used by either real playback backend.");
-    println!("      It feeds optional offline analysis and visualizers only.");
+    println!(
+        "Note: the distributed helper carries its audited FFmpeg runtime; PATH is not consulted."
+    );
     println!();
     println!("See also: docs/RELEASE.md");
 }
@@ -497,22 +619,53 @@ mod tests {
     fn cli_accepts_explicit_rodio_backend() {
         let cli = Cli::try_parse_from(["tz-player", "--backend", "rodio", "about"]).unwrap();
 
-        assert!(matches!(cli.backend, BackendCli::Rodio));
+        assert!(matches!(cli.backend, BackendCli::Audio));
 
         let cli = Cli::try_parse_from(["tz-player", "doctor", "--backend", "rodio"]).unwrap();
-        assert!(matches!(cli.backend, BackendCli::Rodio));
+        assert!(matches!(cli.backend, BackendCli::Audio));
+    }
+
+    #[test]
+    fn package_smoke_accepts_repeated_native_and_helper_fixtures() {
+        let cli = Cli::try_parse_from([
+            "tz-player",
+            "package-smoke",
+            "--database",
+            "smoke.sqlite",
+            "--native",
+            "one.wav",
+            "--native",
+            "two.flac",
+            "--helper",
+            "one.opus",
+            "--helper",
+            "two.wma",
+        ])
+        .unwrap();
+
+        let Some(Commands::PackageSmoke { native, helper, .. }) = cli.command else {
+            panic!("package-smoke command was not parsed");
+        };
+        assert_eq!(
+            native,
+            [PathBuf::from("one.wav"), PathBuf::from("two.flac")]
+        );
+        assert_eq!(
+            helper,
+            [PathBuf::from("one.opus"), PathBuf::from("two.wma")]
+        );
     }
 
     #[test]
     fn rodio_doctor_helpers_are_stable_and_hardware_independent() {
-        let info = RodioOutputInfo {
+        let info = AudioOutputInfo {
             channels: 2,
             sample_rate: 48_000,
             sample_format: "F32".into(),
         };
 
-        assert_eq!(rodio_output_line(&info), "2 channel(s), 48000 Hz, F32");
-        assert!(playback_role(BackendKind::Rodio).contains("experimental"));
+        assert_eq!(audio_output_line(&info), "2 channel(s), 48000 Hz, F32");
+        assert!(playback_role(BackendKind::Audio).contains("bundled helper"));
         assert!(rodio_format_families().contains("AAC"));
     }
 

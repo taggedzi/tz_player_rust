@@ -1,74 +1,84 @@
 # Architecture (Rust tz-player)
 
-## Media roles
+## Audio roles
 
 ```text
-LISTEN PATH                         ANALYSIS PATH
-───────────                         ─────────────
-tz-playback                         tz-analysis
-  VlcBackend   ──► system audio        FFmpeg CLI / WAV
-  RodioBackend ─► system audio           │
-  FakeBackend  ─► tests/fallback         │
-                                        ▼
-                              spectrum / beat / waveform / envelope
-                                        │
-                                        ▼
-                              visualizers (tz-tui)
+local media file
+      |
+      v
+tz-audio composite decoder
+  | native succeeds                 | native unsupported
+  v                                 v
+Symphonia streaming PCM       packaged tz-audio-decoder
+                                    |
+                              custom local-file AVIO
+                                    |
+                           minimal shared FFmpeg 7.1.5
+      |                                 |
+      +---------------+-----------------+
+                      v
+             bounded streaming PCM
+                |             |
+                v             v
+        Rodio/CPAL output   tz-analysis caches
 ```
 
-- **VLC** owns decoding and device output for the default listen path.
-- **Rodio** is an opt-in experimental listen path. A dedicated worker owns
-  Rodio's player and CPAL output; Symphonia streams decode in-process.
-- **FFmpeg** is only for offline PCM used by visualizers and level caches.
-- Missing FFmpeg must never block playback.
-- A selected real backend that cannot initialize falls back to Fake with the
-  requested/effective distinction; Rodio and VLC never silently switch to one
-  another.
+There is one user-facing real backend, `Audio`, plus deterministic `Fake`.
+Native decoding is attempted first. Unsupported native media falls back once
+to the helper; corrupt media reports the composed native/helper error. Routing
+is based on probing, not an extension.
+
+The helper is a package-relative child process. It is never found through
+`PATH`, receives no stdin, opens a `std::fs::File`, and exposes that file to
+FFmpeg through seekable custom AVIO. The packaged FFmpeg build has network,
+protocols, programs, devices, filters, encoders, muxers, GPL, and nonfree
+components disabled. Parent queues, startup/stall/stop timeouts, diagnostics,
+and analysis limits are bounded; cancellation kills and reaps the child.
 
 ## Crate dependency direction
 
 ```text
 tz-player (bin)
-  ├── tz-tui ──────────────► tz-core, tz-control, tz-db (rows only)
-  ├── tz-core ─────────────► tz-playback, tz-db, tz-control
-  │     AppRuntime + PlayerService + metadata (lofty)
-  ├── tz-control             structured Command / TransportSnapshot
-  ├── tz-playback            VLC FFI + Rodio/Symphonia/CPAL + Fake (listen path)
-  ├── tz-analysis            FFmpeg only here
-  └── tz-db                  schema + PlaylistStore + FTS
+  |-- tz-tui ----------> tz-core, tz-control, tz-db (rows only)
+  |-- tz-core ---------> tz-playback, tz-db, tz-control
+  |-- tz-playback -----> tz-audio, Rodio/CPAL
+  |-- tz-analysis -----> tz-audio
+  |-- tz-audio --------> Symphonia + versioned helper protocol/client
+  |-- tz-audio-decoder -> narrow FFmpeg binding/AVIO implementation
+  |-- tz-control ------> structured commands/snapshots
+  `-- tz-db -----------> schema and stores
 ```
 
-`tz-bench` is a development-only executable. It depends on `tz-analysis`,
-`tz-db`, and a feature-gated headless render adapter in `tz-tui`; no production
-crate depends on it, and it is not part of the shipped player binary.
+Frontends do not import Rodio, CPAL, Symphonia, or FFmpeg APIs. FFmpeg FFI is
+confined to `tz-audio-decoder`; the protocol and `PcmSource` contract are
+backend-neutral.
 
-Frontends must not import VLC, Rodio, Symphonia, CPAL, or FFmpeg APIs directly.
+`tz-bench` is development-only and is not shipped. No production crate depends
+on it.
 
 ## Runtime flow
 
 ```text
 CLI / TUI
-   │ Command
-   ▼
-AppRuntime ──► PlaylistStore (SQLite)
-   │
-   └──► PlayerService ──► PlaybackBackend (VLC | Rodio | Fake)
+   | Command
+   v
+AppRuntime ---> PlaylistStore (SQLite)
+   |
+   `--> PlayerService ---> PlaybackBackend (Audio | Fake)
+                              |
+                              `--> dedicated output/decode worker
 ```
 
-VLC and Rodio each isolate device/decoder ownership on a dedicated worker.
-Backend commands receive bounded acknowledgements, while transport polling
-reads a cheap snapshot. Rodio tracks decoded source samples before its rate
-filter so the public position remains in the original media timeline.
+Commands receive bounded acknowledgements while transport polling reads a
+cheap snapshot. Position is tracked in source time before playback-rate
+filtering. Helper-backed seeks stop/reap the old process and start a validated
+replacement stream.
 
-## Headless core
+## Headless core and data
 
-Playback, playlists, and state live outside the TUI. `tz-control` commands are the stable boundary for:
+Playback, playlists, and state live outside the TUI. `tz-control` is the stable
+boundary for this TUI and future frontends.
 
-- TUI (now)
-- `tz-player serve` / IPC (later)
-- other frontends (later)
-
-## Data
-
-- SQLite: schema version 8 (Python baseline plus transient editor drafts)
-- JSON state: atomic writes under a **new** app identity (`tz-player-rs`) so Python installs are not corrupted
+- SQLite schema: version 8.
+- JSON state uses the separate `tz-player-rs` identity.
+- Analysis cache schema: version 2, rebuilt lazily when stale.

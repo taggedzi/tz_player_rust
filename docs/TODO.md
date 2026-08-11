@@ -1,5 +1,9 @@
 # TODO List
 
+> **Historical backlog — audio conclusions superseded 2026-08-11.** VLC was
+> removed and the composite Audio engine became default under ADR-0004. Checked
+> VLC/Rodio items below describe prior implementation evidence, not current setup.
+
 Ordered by triage (see bottom for tier rationale). Items previously listed under
 both "Core" and "TUI" (About info) have been merged. The Shift+Left/Right seek
 item has been removed — verified already implemented in
@@ -43,13 +47,9 @@ release-hardening phase.
 
 ### Security Tier 2 — Security hardening
 
-- [x] **Make the LibVLC ABI explicit and fail closed.** The stable
-  `libvlc_get_version` discovery symbol is loaded first; only validated VLC 3.x
-  libraries resolve the dedicated V3 function table and millisecond
-  conversions. VLC 4 and unknown majors are rejected before ABI-specific
-  lookup because V4 construction/seeking differs. C states cross as integers
-  and are checked before conversion; unsupported versions, unknown states, and
-  V3 time units have regression tests.
+- [x] **Remove the LibVLC ABI and backend.** The earlier VLC 3.x fail-closed
+  loading work is retained in history, but the final Audio migration removed
+  LibVLC discovery, FFI, runtime selection, and packaging entirely.
 - [x] **Remove the affected `lru 0.12.5` dependency.** Ratatui 0.30.2 and
   Crossterm 0.29 replace it with `lru 0.18.2`; the explicit MSRV is now Rust
   1.88. TUI/player tests pass and `cargo audit` no longer reports
@@ -100,7 +100,7 @@ All three done.
 Both done.
 
 - [x] "about" information output — `tz_core::about_info()` (`crates/tz-core/src/about.rs`) is the single shared source: name, version, description, repository, license, schema version, target/profile. No local paths or machine-specific data (that's `tz-player doctor`'s job). Surfaced via `tz-player about` (CLI) and the `i` key in the TUI (About modal). Note: `about_info()`'s `env!("CARGO_PKG_*")` calls resolve to `tz-core`'s own package metadata, which only matches the product because every crate inherits `[workspace.package]` — see the comment on `about_info()` if that ever changes.
-- [x] Warnings/Errors surfacing — footer status line now carries severity (`tz_core::StatusLevel`: Info/Warn/Error), colored in the TUI (plain/yellow/red) with a `[WARN]`/`[ERROR]` prefix. Only playback-backend failures (`PlayerError::Playback`, i.e. the actual VLC/libVLC audio path) are `Error` and persist until dismissed with Esc; everything else (metadata refresh, clear-playlist, add-paths DB errors, missing/unreadable track rows) is a `Warn` that auto-clears like a normal status message (~4s). Previously several of these failures (refresh metadata, clear playlist, add-paths, most transport commands) were silently discarded entirely — they now actually reach the user for the first time.
+- [x] Warnings/Errors surfacing — footer status line now carries severity (`tz_core::StatusLevel`: Info/Warn/Error), colored in the TUI (plain/yellow/red) with a `[WARN]`/`[ERROR]` prefix. Only playback-backend failures (`PlayerError::Playback`, i.e. the active audio-engine path) are `Error` and persist until dismissed with Esc; everything else (metadata refresh, clear-playlist, add-paths DB errors, missing/unreadable track rows) is a `Warn` that auto-clears like a normal status message (~4s). Previously several of these failures (refresh metadata, clear playlist, add-paths, most transport commands) were silently discarded entirely — they now actually reach the user for the first time.
 
 ## Tier 2 — Usability gaps in daily TUI use
 

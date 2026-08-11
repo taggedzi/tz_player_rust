@@ -2,9 +2,10 @@
 
 Rust rewrite of [tz-player](https://github.com/taggedzi/tz-player) — a keyboard-driven, local-first terminal music player.
 
-**Status:** feature-complete for the v1 parity slice, with VLC playback by
-default and an evaluated opt-in Rodio backend retained as experimental. See
-[`docs/PROGRESS.md`](docs/PROGRESS.md).
+**Status:** the v1 parity slice now uses one self-contained Audio engine. VLC
+has been removed, and release packages carry their audited fallback decoder.
+See [`docs/AUDIO_ENGINE_MIGRATION_RESULTS.md`](docs/AUDIO_ENGINE_MIGRATION_RESULTS.md)
+for exact validation status and remaining platform smoke requirements.
 
 **Conversion plan (phases, decisions, backlog for AIs/humans):** [`docs/CONVERSION_PLAN.md`](docs/CONVERSION_PLAN.md)
 
@@ -12,23 +13,22 @@ default and an evaluated opt-in Rodio backend retained as experimental. See
 
 | Role | Technology |
 |------|------------|
-| **Playback (default)** | **VLC 3.x / libVLC** (dynamic load from a complete VLC install; other majors fail closed) |
-| **Playback (experimental)** | **Rodio 0.22 + Symphonia + system audio** (`--backend rodio`; no VLC/FFmpeg runtime) |
-| **Analysis / visualizers** | Rodio live stereo levels when selected; cached envelope/spectrum/beat/waveform from optional **FFmpeg** + native WAV |
+| **Playback (default)** | **Audio**: Rodio/CPAL output, native Symphonia first, package-relative FFmpeg helper fallback |
+| **Analysis / visualizers** | The same bounded native/helper PCM layer plus live stereo levels |
 | **Tests / fallback** | Fake playback backend |
 
-FFmpeg is **not** used for listening. Rodio supports the common MP3, FLAC,
-WAV, Vorbis, AAC/M4A, ALAC, AIFF, CAF, and Matroska families, while VLC remains
-the broader-compatibility default. See the backend capability table in
-[`docs/usage.md`](docs/usage.md).
+Users do not install VLC or FFmpeg. The helper opens an already-open local file
+through custom AVIO; its FFmpeg build has programs, network, protocols,
+devices, filters, encoders, and muxers disabled. `PATH` is never used for media
+tools. See the tested format table in [`docs/usage.md`](docs/usage.md).
 
-Rodio taps its decoded PCM stream for live stereo levels, so level-reactive
+The engine taps its decoded PCM stream for live stereo levels, so level-reactive
 visualizers respond without waiting for offline analysis. Spectrum, beat, and
 waveform detail still use the bounded backend-neutral analysis cache.
 
-VLC and FFmpeg execute trusted external/native code; Rodio/Symphonia parses
-media in the player process. Keep every selected component patched and review
-[`docs/SECURITY.md`](docs/SECURITY.md) before processing untrusted media.
+Symphonia parses native-route media in the player process. Helper-route media
+is parsed in a bounded child process by the packaged FFmpeg 7.1.5 libraries.
+Review [`docs/SECURITY.md`](docs/SECURITY.md) before processing untrusted media.
 
 ## Quick start
 
@@ -44,19 +44,18 @@ cargo run -p tz-player -- setup
 # Add music to the default playlist
 cargo run -p tz-player -- add E:\Music\some-album
 
-# Run TUI with real VLC audio
+# Run TUI with the default Audio engine
 cargo run -p tz-player --
-
-# Experimental real audio without a VLC runtime
-cargo run -p tz-player -- --backend rodio
 
 # Simulated playback (no audio device)
 cargo run -p tz-player -- --backend fake
 ```
 
 Linux source builds need the ALSA development package used by Rodio/CPAL (for
-example, `sudo apt install libasound2-dev` on Ubuntu). Windows and macOS require
-no separately installed Rodio codec runtime.
+example, `sudo apt install libasound2-dev` on Ubuntu). End-user packages need
+no separately installed codec runtime. Building the complete release package
+from source additionally uses the prerequisites in
+[`native/ffmpeg/README.md`](native/ffmpeg/README.md).
 
 ### Themes
 
@@ -121,8 +120,10 @@ keyboard equivalent, so keyboard-only use remains complete.
 crates/
   tz-player      # binary (CLI + TUI entry)
   tz-core        # runtime, player service, metadata, state, levels
-  tz-playback    # PlaybackBackend: VLC + experimental Rodio + Fake
-  tz-analysis    # FFmpeg/WAV analysis (envelope, spectrum, beat, waveform)
+  tz-audio       # streaming PCM, native decoder, helper protocol/client
+  tz-audio-decoder # package-relative FFmpeg helper process
+  tz-playback    # composite Audio backend + Fake
+  tz-analysis    # backend-neutral bounded analysis products
   tz-control     # structured Command + TransportSnapshot
   tz-db          # SQLite schema v8 + stores + FTS + editor drafts
   tz-tui         # ratatui UI + visualizer plugins
@@ -137,7 +138,7 @@ cargo check --workspace --all-targets --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 cargo audit
-cargo deny --locked check advisories bans licenses sources
+cargo deny --locked --workspace --all-features check advisories bans licenses sources
 ./scripts/check-distribution-licenses.ps1
 ```
 
@@ -166,6 +167,7 @@ macOS, and locked dependency policy).
 - [`docs/architecture.md`](docs/architecture.md) — crate boundaries  
 - [`docs/PROGRESS.md`](docs/PROGRESS.md) — implementation status  
 - [`docs/RODIO_EVALUATION.md`](docs/RODIO_EVALUATION.md) — compatibility evidence and recommendation
+- [`docs/AUDIO_ENGINE_MIGRATION_RESULTS.md`](docs/AUDIO_ENGINE_MIGRATION_RESULTS.md) — implementation and package evidence
 - [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) — opt-in performance/resource baselines and comparisons
 - [`docs/tz_player_v2_future_project.md`](docs/tz_player_v2_future_project.md) — long-term vision  
 - [`docs/adr/`](docs/adr/) — decisions  
@@ -173,11 +175,11 @@ macOS, and locked dependency policy).
 
 ## License
 
-Project-authored code is MIT — see `LICENSE`. Binary releases also contain
-third-party code under compatible licenses, including Apache-2.0 and MPL-2.0;
-their terms and exact source links are preserved in
+Project-authored code is MIT — see `LICENSE`. Binary releases contain
+third-party Rust code and a dynamically linked, minimal LGPL FFmpeg 7.1.5
+runtime. Terms and exact source links are preserved in
 [`THIRD_PARTY_LICENSES.html`](THIRD_PARTY_LICENSES.html). Use
 [`scripts/package-release.ps1`](scripts/package-release.ps1) so those files stay
-with the distributed executable. Native/runtime boundaries such as ALSA,
-libVLC, and FFmpeg are recorded in
+with the executable and matching FFmpeg source metadata. Native/runtime
+boundaries are recorded in
 [`NATIVE_DEPENDENCIES.md`](NATIVE_DEPENDENCIES.md).

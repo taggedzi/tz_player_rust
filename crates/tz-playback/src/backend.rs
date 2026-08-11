@@ -19,7 +19,7 @@ pub trait PlaybackLevelProvider: Send + Sync {
     async fn get_level_sample(&self) -> Option<LevelSample>;
 }
 
-/// Playback engine protocol (VLC, Fake, future backends).
+/// Playback engine protocol (Audio or Fake).
 ///
 /// Implementations must not perform analysis decode; that is `tz-analysis`.
 #[async_trait]
@@ -64,11 +64,8 @@ pub enum PlaybackError {
     #[error("backend not started")]
     NotStarted,
 
-    #[error("VLC/libVLC unavailable: {0}")]
-    VlcUnavailable(String),
-
-    #[error("Rodio unavailable: {0}")]
-    RodioUnavailable(String),
+    #[error("Audio output unavailable: {0}")]
+    AudioUnavailable(String),
 }
 
 impl PlaybackError {

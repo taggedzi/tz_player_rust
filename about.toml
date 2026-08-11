@@ -8,6 +8,7 @@ accepted = [
     "ISC",
     "MPL-2.0",
     "Unicode-3.0",
+    "WTFPL",
     "Zlib",
 ]
 

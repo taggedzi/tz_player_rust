@@ -1,47 +1,31 @@
 # Native and external dependencies
 
-`tz-player`'s own source is MIT-licensed. The Rust components compiled into the
-executable and their terms are listed in `THIRD_PARTY_LICENSES.html`. The
-following native/runtime boundaries are not fully represented by Cargo
-metadata.
+`tz-player` source is MIT-licensed. The Rust dependencies are listed in
+`THIRD_PARTY_LICENSES.html`.
 
-## ALSA / libasound (Linux)
+## Audio output
 
-The Linux executable dynamically links the system copy of ALSA's `libasound`.
-ALSA is covered by the GNU Lesser General Public License version 2.1 or, at
-your option, a later version. A copy of version 2.1 is included at
-`licenses/LGPL-2.1.txt`; upstream source is available from
-<https://github.com/alsa-project/alsa-lib>.
+Rodio/CPAL uses the operating system’s audio backend. Linux packages may
+therefore require the system ALSA library. The package does not include a
+system audio driver.
 
-The release archive does not contain `libasound`. The dynamic link uses the
-shared library already present on the recipient's system and permits an
-interface-compatible modified replacement. The MIT terms for `tz-player` do
-not prohibit reverse engineering for debugging modifications to the LGPL
-library.
+## Bundled FFmpeg helper
 
-## VLC / libVLC 3
+The release package contains `audio/tz-audio-decoder` and the audited shared
+FFmpeg libraries `avcodec`, `avformat`, `avutil`, and `swresample`. The build
+is shared-only and rejects GPL, nonfree, network, program, device, filter,
+encoder, and muxer components. The exact source archive, checksum, configure
+identity, and patch set are recorded in `audio/FFMPEG_BUILD.json`,
+`audio/FFMPEG_COMPONENTS.json`, `audio/FFMPEG_CONFIGURE.log`, and
+`audio/FFMPEG_CHANGES.diff`.
 
-The default playback backend dynamically loads libVLC 3 from the recipient's
-separate VLC installation. libVLC and most VLC modules are covered by
-LGPL-2.1-or-later. The LGPL-2.1 text is included at
-`licenses/LGPL-2.1.txt`; upstream source is available from
-<https://code.videolan.org/videolan/vlc>.
-
-No VLC library or plugin is included in this archive. A distributor who adds a
-VLC runtime must audit the exact VLC build and every bundled plugin, preserve
-their notices, and provide the corresponding source as their licenses require.
-
-## FFmpeg
-
-The optional analysis backend starts an independently installed `ffmpeg`
-executable as a separate process. No FFmpeg code or binary is included in this
-archive. FFmpeg builds can be LGPL, GPL, or non-redistributable depending on
-their configuration and linked libraries. A distributor who adds FFmpeg to the
-archive must audit that exact build separately.
+The corresponding source offer is documented in [FFMPEG_SOURCE.md](FFMPEG_SOURCE.md).
+The package must include the LGPL notice and any license for an audited native
+transitive dependency. The helper is loaded only from the package-relative
+`audio/` directory; system FFmpeg and `PATH` are not consulted.
 
 ## SQLite and operating-system libraries
 
 The `rusqlite` bundled feature compiles SQLite core into the executable. SQLite
-publishes its deliverable core code as public domain. Standard Windows and
-macOS system frameworks are referenced from the operating system and are not
-included in the archive.
+publishes its deliverable core code as public domain. Standard operating-system
+frameworks and audio drivers remain system dependencies.

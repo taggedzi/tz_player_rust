@@ -9,7 +9,8 @@ use std::time::Duration;
 use rodio::{DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 
 use crate::rodio_engine::{
-    decode_file, RodioSnapshot, RodioTransport, TimelineHandle, TimelineSource,
+    decode_file_at, DecodeStatusHandle, RodioSnapshot, RodioTransport, TimelineHandle,
+    TimelineSource,
 };
 use crate::BackendStatus;
 
@@ -59,13 +60,13 @@ pub(crate) enum RodioWorkerEventKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RodioOutputInfo {
+pub struct AudioOutputInfo {
     pub channels: u16,
     pub sample_rate: u32,
     pub sample_format: String,
 }
 
-impl fmt::Display for RodioOutputInfo {
+impl fmt::Display for AudioOutputInfo {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
@@ -79,7 +80,7 @@ pub(crate) struct RodioWorker {
     cmd_tx: Sender<RodioCmd>,
     event_rx: Receiver<RodioWorkerEvent>,
     join: Option<JoinHandle<()>>,
-    output_info: RodioOutputInfo,
+    output_info: AudioOutputInfo,
 }
 
 impl RodioWorker {
@@ -118,7 +119,7 @@ impl RodioWorker {
         self.event_rx.try_recv().ok()
     }
 
-    pub(crate) fn output_info(&self) -> RodioOutputInfo {
+    pub(crate) fn output_info(&self) -> AudioOutputInfo {
         self.output_info.clone()
     }
 
@@ -153,7 +154,7 @@ impl Drop for RodioWorker {
 fn worker_main(
     cmd_rx: Receiver<RodioCmd>,
     event_tx: Sender<RodioWorkerEvent>,
-    ready_tx: Sender<Result<RodioOutputInfo, String>>,
+    ready_tx: Sender<Result<AudioOutputInfo, String>>,
 ) {
     let (stream_error_tx, stream_error_rx) = mpsc::channel::<String>();
     let builder = match DeviceSinkBuilder::from_default_device() {
@@ -174,7 +175,7 @@ fn worker_main(
     };
     output.log_on_drop(false);
     let config = output.config();
-    let info = RodioOutputInfo {
+    let info = AudioOutputInfo {
         channels: config.channel_count().get(),
         sample_rate: config.sample_rate().get(),
         sample_format: format!("{:?}", config.sample_format()),
@@ -205,9 +206,11 @@ struct WorkerEngine {
     output: MixerDeviceSink,
     player: Option<Player>,
     timeline: Option<TimelineHandle>,
+    decode_status: Option<DecodeStatusHandle>,
     transport: RodioTransport,
     stream_error_rx: Receiver<String>,
     last_event_position_ms: u64,
+    last_underrun_count: u64,
 }
 
 impl WorkerEngine {
@@ -216,9 +219,11 @@ impl WorkerEngine {
             output,
             player: None,
             timeline: None,
+            decode_status: None,
             transport: RodioTransport::default(),
             stream_error_rx,
             last_event_position_ms: 0,
+            last_underrun_count: 0,
         }
     }
 
@@ -281,12 +286,14 @@ impl WorkerEngine {
     ) -> Result<(), String> {
         self.player.take();
         self.timeline.take();
+        self.decode_status.take();
+        self.last_underrun_count = 0;
         self.transport
             .begin_load(item_id, start_ms, fallback_duration_ms);
         emit_state(events, BackendStatus::Loading);
 
         let result: Result<(), String> = (|| {
-            let mut decoded = decode_file(&path).map_err(|error| error.to_string())?;
+            let mut decoded = decode_file_at(&path, start_ms).map_err(|error| error.to_string())?;
             let duration_ms = decoded.duration_ms;
             let start = Duration::from_millis(start_ms);
             if start_ms > 0 {
@@ -306,6 +313,7 @@ impl WorkerEngine {
             player.append(source);
             self.player = Some(player);
             self.timeline = Some(timeline);
+            self.decode_status = Some(decoded.status);
             self.transport.loaded(duration_ms);
             self.last_event_position_ms = start_ms;
 
@@ -376,8 +384,10 @@ impl WorkerEngine {
             player.stop();
         }
         self.timeline.take();
+        self.decode_status.take();
         self.transport.stop();
         self.last_event_position_ms = 0;
+        self.last_underrun_count = 0;
     }
 
     fn refresh(&mut self, events: &Sender<RodioWorkerEvent>) {
@@ -392,6 +402,29 @@ impl WorkerEngine {
                 });
             }
             return;
+        }
+
+        if let Some(status) = &self.decode_status {
+            if let Some(error) = status.take_error() {
+                self.player.take();
+                self.timeline.take();
+                self.decode_status.take();
+                let message = format!("Audio decoder failed: {error}");
+                self.transport.fail(message.clone());
+                let _ = events.send(RodioWorkerEvent {
+                    kind: RodioWorkerEventKind::Error(message),
+                });
+                return;
+            }
+            let underruns = status.underruns();
+            if underruns != self.last_underrun_count {
+                tracing::debug!(
+                    total = underruns,
+                    delta = underruns.saturating_sub(self.last_underrun_count),
+                    "bundled helper playback underrun"
+                );
+                self.last_underrun_count = underruns;
+            }
         }
 
         if let Some(timeline) = &self.timeline {
@@ -412,6 +445,7 @@ impl WorkerEngine {
         if self.player.as_ref().is_some_and(Player::empty) && self.transport.observe_empty() {
             self.player.take();
             self.timeline.take();
+            self.decode_status.take();
             let snapshot = self.transport.snapshot();
             let _ = events.send(RodioWorkerEvent {
                 kind: RodioWorkerEventKind::Position {

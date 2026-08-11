@@ -10,7 +10,7 @@ use crate::path_util::{normalize_path, stat_path};
 use crate::{create_schema, ensure_playlist_search_fts, open_connection};
 
 const ANALYSIS_TYPE: &str = "waveform_proxy";
-const ANALYSIS_VERSION: i64 = 1;
+const ANALYSIS_VERSION: i64 = 2;
 
 #[derive(Debug, Clone, Copy)]
 pub struct WaveformParams {

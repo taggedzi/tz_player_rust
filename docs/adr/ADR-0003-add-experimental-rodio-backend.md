@@ -1,6 +1,6 @@
 # ADR-0003 — Add an Experimental Rodio Playback Backend
 
-- Status: Accepted
+- Status: Superseded by ADR-0004
 - Date: 2026-08-10
 - Design: `docs/superpowers/specs/2026-08-10-rodio-backend-design.md`
 

@@ -5,6 +5,8 @@ members = [
     "crates/tz-core",
     "crates/tz-playback",
     "crates/tz-analysis",
+    "crates/tz-audio",
+    "crates/tz-audio-decoder",
     "crates/tz-control",
     "crates/tz-db",
     "crates/tz-tui",
@@ -24,6 +26,7 @@ rust-version = "1.89"
 tz-core = { path = "crates/tz-core" }
 tz-playback = { path = "crates/tz-playback" }
 tz-analysis = { path = "crates/tz-analysis" }
+tz-audio = { path = "crates/tz-audio", default-features = true }
 # re-export path already exists
 tz-control = { path = "crates/tz-control" }
 tz-db = { path = "crates/tz-db" }
@@ -44,12 +47,12 @@ lofty = "0.25"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "layout-cache", "underline-color"] }
 crossterm = "0.29"
 rand = "0.9"
-libloading = "0.8"
 rodio = { version = "0.22.2", default-features = false, features = ["playback", "symphonia-all", "symphonia-simd", "tracing"] }
 hound = "3.5"
 sha1 = "0.10"
 hex = "0.4"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "bmp", "webp"] }
+symphonia = { version = "0.5.5", features = ["all"] }
 
 [profile.release]
 lto = "thin"

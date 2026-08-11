@@ -3,20 +3,148 @@
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use rodio::{Decoder, Source};
+use tz_audio::helper::PlaybackRead;
+use tz_audio::{HelperPcmSource, PcmSource, PcmSpec};
 
 use crate::{BackendStatus, LevelSample, PlaybackError};
 
 pub(crate) type FileDecoder = Decoder<BufReader<File>>;
 
+enum DecoderKind {
+    Native(FileDecoder),
+    Helper(Box<HelperPcmSource>),
+}
+
+pub(crate) struct DecoderSource {
+    inner: DecoderKind,
+    helper_frame: [f32; 2],
+    helper_offset: usize,
+    status: DecodeStatusHandle,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct DecodeStatusHandle {
+    error: Arc<Mutex<Option<String>>>,
+    underruns: Arc<AtomicU64>,
+}
+
+impl DecodeStatusHandle {
+    fn fail(&self, error: impl Into<String>) {
+        *self.error.lock().unwrap() = Some(error.into());
+    }
+
+    pub(crate) fn take_error(&self) -> Option<String> {
+        self.error.lock().unwrap().take()
+    }
+
+    pub(crate) fn underruns(&self) -> u64 {
+        self.underruns.load(Ordering::Relaxed)
+    }
+}
+
+impl Iterator for DecoderSource {
+    type Item = f32;
+    fn next(&mut self) -> Option<Self::Item> {
+        match &mut self.inner {
+            DecoderKind::Native(source) => source.next(),
+            DecoderKind::Helper(source) => {
+                if self.helper_offset >= self.helper_frame.len() {
+                    match source.try_read_for_playback(&mut self.helper_frame) {
+                        Ok(PlaybackRead::Data(2)) => self.helper_offset = 0,
+                        Ok(PlaybackRead::Underrun) => {
+                            self.status.underruns.fetch_add(1, Ordering::Relaxed);
+                            self.helper_frame = [0.0; 2];
+                            self.helper_offset = 0;
+                        }
+                        Ok(PlaybackRead::Eof) => return None,
+                        Ok(PlaybackRead::Data(count)) => {
+                            self.status.fail(format!(
+                                "bundled helper returned {count} samples for a stereo frame"
+                            ));
+                            return None;
+                        }
+                        Err(error) => {
+                            self.status.fail(error.to_string());
+                            return None;
+                        }
+                    }
+                }
+                let sample = self.helper_frame[self.helper_offset];
+                self.helper_offset += 1;
+                Some(sample)
+            }
+        }
+    }
+}
+
+impl Source for DecoderSource {
+    fn current_span_len(&self) -> Option<usize> {
+        match &self.inner {
+            DecoderKind::Native(source) => source.current_span_len(),
+            DecoderKind::Helper(_) => None,
+        }
+    }
+    fn channels(&self) -> rodio::ChannelCount {
+        match &self.inner {
+            DecoderKind::Native(source) => source.channels(),
+            DecoderKind::Helper(source) => {
+                rodio::ChannelCount::new(source.spec().channels).expect("validated helper channels")
+            }
+        }
+    }
+    fn sample_rate(&self) -> rodio::SampleRate {
+        match &self.inner {
+            DecoderKind::Native(source) => source.sample_rate(),
+            DecoderKind::Helper(source) => {
+                rodio::SampleRate::new(source.spec().sample_rate).expect("validated helper rate")
+            }
+        }
+    }
+    fn total_duration(&self) -> Option<Duration> {
+        match &self.inner {
+            DecoderKind::Native(source) => source.total_duration(),
+            DecoderKind::Helper(source) => source
+                .duration_frames()
+                .map(|frames| tz_audio::frames_to_duration(frames, source.spec().sample_rate)),
+        }
+    }
+    fn try_seek(&mut self, position: Duration) -> Result<(), rodio::source::SeekError> {
+        match &mut self.inner {
+            DecoderKind::Native(source) => source.try_seek(position),
+            DecoderKind::Helper(source) => {
+                let frame = position
+                    .as_nanos()
+                    .saturating_mul(u128::from(source.spec().sample_rate))
+                    / 1_000_000_000;
+                source
+                    .seek_to_frame(frame.min(u128::from(u64::MAX)) as u64)
+                    .map_err(|error| rodio::source::SeekError::Other(Arc::new(error)))?;
+                self.helper_offset = self.helper_frame.len();
+                Ok(())
+            }
+        }
+    }
+}
+
+impl DecoderSource {
+    fn route(&self) -> &'static str {
+        match self.inner {
+            DecoderKind::Native(_) => "native",
+            DecoderKind::Helper(_) => "bundled-helper",
+        }
+    }
+}
+
 /// A lazily decoded local source plus its original-timeline duration.
 pub(crate) struct DecodedFile {
-    pub(crate) decoder: FileDecoder,
+    pub(crate) decoder: DecoderSource,
     pub(crate) duration_ms: Option<u64>,
+    pub(crate) status: DecodeStatusHandle,
 }
 
 #[derive(Debug, Clone)]
@@ -208,23 +336,229 @@ fn duration_to_samples(duration: Duration, channels: u16, sample_rate: u32) -> u
 }
 
 /// Open a local file for streaming decode without requiring an output device.
+#[allow(dead_code)]
 pub(crate) fn decode_file(path: &Path) -> Result<DecodedFile, PlaybackError> {
+    decode_file_at(path, 0)
+}
+
+pub(crate) fn decode_file_at(path: &Path, start_ms: u64) -> Result<DecodedFile, PlaybackError> {
     let file = File::open(path).map_err(|error| {
         PlaybackError::message(format!("Rodio could not open {}: {error}", path.display()))
     })?;
-    let decoder = Decoder::try_from(file).map_err(|error| {
-        PlaybackError::message(format!(
-            "Rodio could not decode {} (unsupported or corrupt media): {error}",
-            path.display()
-        ))
-    })?;
+    let status = DecodeStatusHandle::default();
+    let native = match tz_audio::probe_helper_only_content(path) {
+        Ok(Some(family)) => Err(format!(
+            "native decoder does not support recognized {family} content"
+        )),
+        Ok(None) => Decoder::try_from(file).map_err(|error| error.to_string()),
+        Err(error) => {
+            return Err(PlaybackError::message(format!(
+                "Rodio could not inspect {}: {error}",
+                path.display()
+            )));
+        }
+    };
+    let decoder = match native {
+        Ok(decoder) => DecoderSource {
+            inner: DecoderKind::Native(decoder),
+            helper_frame: [0.0; 2],
+            helper_offset: 2,
+            status: status.clone(),
+        },
+        Err(native_error) => {
+            let spec = PcmSpec::new(48_000, 2)
+                .map_err(|error| PlaybackError::message(error.to_string()))?;
+            let config = tz_audio::helper::HelperConfig::packaged().map_err(|helper_error| PlaybackError::message(format!("native decoder rejected {}: {native_error}; bundled helper unavailable: {helper_error}", path.display())))?;
+            let frame = start_ms.saturating_mul(u64::from(spec.sample_rate)) / 1_000;
+            let helper = tz_audio::helper::decode(&config, path, frame, spec).map_err(|helper_error| PlaybackError::message(format!("native decoder rejected {}: {native_error}; bundled helper failed: {helper_error}", path.display())))?;
+            DecoderSource {
+                inner: DecoderKind::Helper(Box::new(helper)),
+                helper_frame: [0.0; 2],
+                helper_offset: 2,
+                status: status.clone(),
+            }
+        }
+    };
     let duration_ms = decoder
         .total_duration()
         .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64);
     Ok(DecodedFile {
         decoder,
         duration_ms,
+        status,
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackagePlaybackSmokeReport {
+    pub route: &'static str,
+    pub duration_ms: Option<u64>,
+    pub seek_position_ms: u64,
+    pub final_position_ms: u64,
+    pub underruns: u64,
+}
+
+/// Exercise the shipped decode and Rodio mixer path without opening hardware.
+///
+/// This is intentionally exposed only for the release-package verifier. It
+/// drives pause/resume, seek, stop, level metering, and a fresh natural-end run
+/// through the same sources the real output worker consumes.
+pub fn package_playback_smoke(path: &Path) -> Result<PackagePlaybackSmokeReport, String> {
+    let decoded = decode_file_at(path, 0).map_err(|error| error.to_string())?;
+    let route = decoded.decoder.route();
+    let duration_ms = decoded.duration_ms;
+    let channels = decoded.decoder.channels();
+    let sample_rate = decoded.decoder.sample_rate();
+    let status = decoded.status;
+    let (source, timeline) = TimelineSource::new(decoded.decoder, Duration::ZERO);
+    let (mixer, output) = rodio::mixer::mixer(channels, sample_rate);
+    let player = rodio::Player::connect_new(&mixer);
+    player.set_volume(0.5);
+    player.append(source);
+    let driver = spawn_mixer_driver(output, status.clone(), channels, sample_rate)?;
+    std::thread::sleep(Duration::from_millis(75));
+    check_decode_status(&status)?;
+    if timeline.position_ms() == 0 {
+        return Err("package playback did not advance source time".into());
+    }
+    let level = timeline.level_sample();
+    if level.left <= 0.0 && level.right <= 0.0 {
+        return Err("package playback did not publish live PCM levels".into());
+    }
+
+    player.pause();
+    std::thread::sleep(Duration::from_millis(20));
+    let paused_at = timeline.position_ms();
+    std::thread::sleep(Duration::from_millis(30));
+    if timeline.position_ms().abs_diff(paused_at) > 5 {
+        return Err("package playback source time advanced while paused".into());
+    }
+    player.play();
+
+    let seek_ms = duration_ms.unwrap_or(1_000).saturating_sub(1).min(100);
+    player
+        .try_seek(Duration::from_millis(seek_ms))
+        .map_err(|error| format!("package playback seek failed: {error}"))?;
+    std::thread::sleep(Duration::from_millis(30));
+    check_decode_status(&status)?;
+    let seek_position_ms = timeline.position_ms();
+    if seek_position_ms < seek_ms {
+        return Err(format!(
+            "package playback seek reported {seek_position_ms} ms; expected at least {seek_ms} ms"
+        ));
+    }
+    player.stop();
+    std::thread::sleep(Duration::from_millis(10));
+    driver.stop()?;
+    drop(player);
+    drop(mixer);
+
+    let decoded = decode_file_at(path, 0).map_err(|error| error.to_string())?;
+    let channels = decoded.decoder.channels();
+    let sample_rate = decoded.decoder.sample_rate();
+    let natural_status = decoded.status;
+    let (source, natural_timeline) = TimelineSource::new(decoded.decoder, Duration::ZERO);
+    let (mixer, output) = rodio::mixer::mixer(channels, sample_rate);
+    let player = rodio::Player::connect_new(&mixer);
+    player.append(source);
+    let driver = spawn_mixer_driver(output, natural_status.clone(), channels, sample_rate)?;
+    let maximum_ms = duration_ms.unwrap_or(2_000).saturating_add(2_000);
+    let deadline = Instant::now() + Duration::from_millis(maximum_ms);
+    while !player.empty() && Instant::now() < deadline {
+        check_decode_status(&natural_status)?;
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    driver.stop()?;
+    if !player.empty() {
+        return Err(format!(
+            "package playback did not reach natural end within {maximum_ms} ms"
+        ));
+    }
+    if let Some(error) = natural_status.take_error() {
+        return Err(format!("package playback decoder failed: {error}"));
+    }
+    let final_position_ms = natural_timeline.position_ms();
+    if let Some(duration_ms) = duration_ms {
+        if final_position_ms.abs_diff(duration_ms) > 25 {
+            return Err(format!(
+                "package playback ended at {final_position_ms} ms; duration is {duration_ms} ms"
+            ));
+        }
+    }
+
+    Ok(PackagePlaybackSmokeReport {
+        route,
+        duration_ms,
+        seek_position_ms,
+        final_position_ms,
+        underruns: status
+            .underruns()
+            .saturating_add(natural_status.underruns()),
+    })
+}
+
+fn spawn_mixer_driver(
+    mut output: impl Iterator<Item = f32> + Send + 'static,
+    status: DecodeStatusHandle,
+    channels: rodio::ChannelCount,
+    sample_rate: rodio::SampleRate,
+) -> Result<MixerDriver, String> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = stop.clone();
+    let driver = std::thread::Builder::new()
+        .name("package-smoke-mixer".into())
+        .spawn(move || {
+            let frames_per_span = 256usize;
+            let samples_per_span = usize::from(channels.get()) * frames_per_span;
+            let span = Duration::from_secs_f64(frames_per_span as f64 / sample_rate.get() as f64);
+            while !thread_stop.load(Ordering::Relaxed) {
+                for _ in 0..samples_per_span {
+                    output
+                        .next()
+                        .ok_or_else(|| "Rodio mixer stopped unexpectedly".to_string())?;
+                }
+                check_decode_status(&status)?;
+                std::thread::sleep(span);
+            }
+            Ok(())
+        })
+        .map_err(|error| format!("failed to start package smoke mixer: {error}"))?;
+    Ok(MixerDriver {
+        stop,
+        join: Some(driver),
+    })
+}
+
+struct MixerDriver {
+    stop: Arc<AtomicBool>,
+    join: Option<std::thread::JoinHandle<Result<(), String>>>,
+}
+
+impl MixerDriver {
+    fn stop(mut self) -> Result<(), String> {
+        self.stop.store(true, Ordering::Relaxed);
+        self.join
+            .take()
+            .expect("mixer driver join handle")
+            .join()
+            .map_err(|_| "Rodio package mixer driver panicked".to_string())?
+    }
+}
+
+impl Drop for MixerDriver {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+fn check_decode_status(status: &DecodeStatusHandle) -> Result<(), String> {
+    if let Some(error) = status.take_error() {
+        return Err(format!("package playback decoder failed: {error}"));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -446,9 +780,30 @@ mod tests {
             Ok(_) => panic!("corrupt media unexpectedly decoded"),
             Err(error) => error,
         };
-        assert!(error.to_string().contains("unsupported or corrupt"));
+        let message = error.to_string();
+        assert!(message.contains("native decoder rejected"));
+        assert!(message.contains("bundled helper unavailable"));
 
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn packaged_helper_streams_and_restarts_for_seek_when_available() {
+        if tz_audio::helper::HelperConfig::packaged().is_err() {
+            return;
+        }
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tone-opus.ogg");
+        let mut decoded = decode_file_at(&path, 0).unwrap();
+        for _ in 0..512 {
+            assert!(decoded.decoder.next().is_some());
+        }
+        decoded
+            .decoder
+            .try_seek(Duration::from_millis(100))
+            .unwrap();
+        for _ in 0..512 {
+            assert!(decoded.decoder.next().is_some());
+        }
     }
 
     #[test]

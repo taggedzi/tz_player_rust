@@ -24,6 +24,8 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          toolchain: 1.89.0
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -38,7 +40,7 @@ jobs:
         run: cargo audit
 
       - name: Enforce dependency policy
-        run: cargo deny --locked check advisories bans licenses sources
+        run: cargo deny --locked --workspace --all-features check advisories bans licenses sources
 
       - name: Verify distributable third-party notices
         shell: pwsh
@@ -50,9 +52,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Compile both real backends on every supported desktop platform.
-        # Missing local VLC installs and hosted-runner audio devices are
-        # expected, explicitly tested outcomes.
+        # Normal workspace tests are hardware-independent and do not need the
+        # separately built FFmpeg SDK.
         os: [windows-latest, ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -60,6 +61,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
+          toolchain: 1.89.0
           components: rustfmt, clippy
 
       - name: Cache cargo
@@ -82,3 +84,130 @@ jobs:
 
       - name: Test
         run: cargo test --workspace --locked
+
+  native-package:
+    name: Native package (${{ matrix.label }})
+    needs: [dependency-policy, check]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: windows-x86_64
+          - os: ubuntu-latest
+            label: linux-x86_64
+          - os: macos-15
+            label: macos-arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          toolchain: 1.89.0
+          components: rustfmt, clippy
+
+      - name: Install Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Cache audited FFmpeg build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: native/ffmpeg/build
+          key: ffmpeg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native/ffmpeg/manifest.toml') }}
+
+      - name: Install Windows native build tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install nasm --yes --no-progress
+          C:\msys64\usr\bin\bash.exe -lc "pacman -Sy --noconfirm --needed make diffutils"
+
+      - name: Install Linux native build tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libasound2-dev libclang-dev nasm pkg-config
+
+      - name: Install macOS native build tools
+        if: runner.os == 'macOS'
+        run: brew install nasm pkg-config
+
+      - name: Build audited FFmpeg SDK (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./native/ffmpeg/build.ps1
+
+      - name: Build audited FFmpeg SDK (Unix)
+        if: runner.os != 'Windows'
+        run: bash ./native/ffmpeg/build.sh
+
+      - name: Export audited SDK paths
+        shell: pwsh
+        run: |
+          $prefix = Join-Path $env:GITHUB_WORKSPACE 'native/ffmpeg/build/sdk'
+          $library = if ($IsWindows) { Join-Path $prefix 'bin' } else { Join-Path $prefix 'lib' }
+          "TZ_FFMPEG_PREFIX=$prefix" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TZ_FFMPEG_INCLUDE_DIR=$(Join-Path $prefix 'include')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TZ_FFMPEG_LIB_DIR=$library" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "FFMPEG_DIR=$prefix" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PKG_CONFIG_PATH=$(Join-Path $prefix 'lib/pkgconfig')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $library | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Test exact native helper and format matrix
+        run: cargo test -p tz-audio-decoder --features ffmpeg-native --locked
+
+      - name: Test helper playback and all analysis cache products
+        shell: pwsh
+        run: |
+          $helperName = if ($IsWindows) { 'target/debug/tz-audio-decoder.exe' } else { 'target/debug/tz-audio-decoder' }
+          $helper = Join-Path $env:GITHUB_WORKSPACE $helperName
+          $env:TZ_PLAYER_AUDIO_HELPER = $helper
+          cargo test -p tz-playback packaged_helper_streams_and_restarts_for_seek_when_available --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p tz-core helper_only_fixture_creates_all_analysis_products_when_injected --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Lint exact native helper
+        run: cargo clippy -p tz-audio-decoder --features ffmpeg-native --all-targets --locked -- -D warnings
+
+      - name: Install release notice generator
+        env:
+          RUSTFLAGS: ''
+        run: cargo install cargo-about --version 0.9.1 --locked --features cli
+
+      - name: Build audited release archive
+        shell: pwsh
+        run: ./scripts/package-release.ps1
+
+      - name: Smoke extracted archive with no system media tools
+        shell: pwsh
+        run: |
+          $host = (rustc -vV | Where-Object { $_ -like 'host: *' }).Substring('host: '.Length)
+          $suffix = if ($IsWindows) { '.zip' } else { '.tar.gz' }
+          $archive = @(Get-ChildItem -LiteralPath target/dist -File | Where-Object {
+            $_.Name -like "tz-player-*-$host$suffix"
+          })
+          if ($archive.Count -ne 1) { throw "Expected one package archive for $host; found $($archive.Count)." }
+          ./scripts/test-staged-package.ps1 -Archive $archive[0].FullName
+
+      - name: Upload tested release and matching source
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tz-player-${{ matrix.label }}
+          path: |
+            target/dist/tz-player-*.zip
+            target/dist/tz-player-*.zip.sha256
+            target/dist/tz-player-*.tar.gz
+            target/dist/tz-player-*.tar.gz.sha256
+            target/dist/ffmpeg-*.tar.xz
+            target/dist/ffmpeg-*.tar.xz.sha256
+            target/dist/ffmpeg-*.patch
+            target/dist/ffmpeg-*.patch.sha256
+          if-no-files-found: error

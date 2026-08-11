@@ -1,0 +1,45 @@
+# Pinned source/build identity for the LGPL helper runtime.
+# Generated SDK files are intentionally not stored in Git.
+version = "7.1.5"
+source_url = "https://ffmpeg.org/releases/ffmpeg-7.1.5.tar.xz"
+source_signature_url = "https://ffmpeg.org/releases/ffmpeg-7.1.5.tar.xz.asc"
+source_sha256 = "de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f"
+source_md5 = "8a5e3d530be908235511f585ccaceafd"
+ffmpeg_release_commit = "7.1.5"
+patch = "patches/0001-speex-frame-size.patch"
+patch_sha256 = "eea0d6b95d92e84e70884dad960759bc73a4c6bca9052908190e8bf9d10bcd75"
+configure = [
+  "--disable-gpl",
+  "--disable-nonfree",
+  "--disable-everything",
+  "--disable-autodetect",
+  "--disable-static",
+  "--enable-shared",
+  "--disable-programs",
+  "--disable-doc",
+  "--disable-debug",
+  "--disable-network",
+  "--disable-protocols",
+  "--disable-devices",
+  "--disable-avdevice",
+  "--disable-filters",
+  "--disable-avfilter",
+  "--disable-swscale",
+  "--disable-postproc",
+  "--disable-hwaccels",
+  "--disable-encoders",
+  "--disable-muxers",
+  "--disable-iconv",
+  "--enable-avcodec",
+  "--enable-avformat",
+  "--enable-avutil",
+  "--enable-swresample",
+]
+demuxers = ["ac3", "aiff", "ape", "asf", "caf", "dts", "eac3", "flac", "matroska", "mov", "mp3", "mpc", "mpc8", "ogg", "tta", "wav", "wv"]
+parsers = ["aac", "ac3", "dca", "flac", "mpegaudio", "opus", "vorbis"]
+decoders = ["aac", "ac3", "alac", "ape", "dca", "eac3", "flac", "mp1", "mp2", "mp3", "mpc7", "mpc8", "opus", "pcm_alaw", "pcm_f32le", "pcm_f64le", "pcm_mulaw", "pcm_s16be", "pcm_s16le", "pcm_s24be", "pcm_s24le", "pcm_s32be", "pcm_s32le", "pcm_s8", "pcm_u8", "speex", "tta", "vorbis", "wavpack", "wmalossless", "wmapro", "wmav1", "wmav2"]
+bitstream_filters = ["pcm_rechunk"]
+libraries = ["avcodec", "avformat", "avutil", "swresample"]
+binding = "ffmpeg-sys-next"
+binding_version = "8.1.0"
+library_majors = { avcodec = 61, avformat = 61, avutil = 59, swresample = 5 }

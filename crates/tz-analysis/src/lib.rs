@@ -1,6 +1,6 @@
 //! Offline audio analysis for visualizers.
 //!
-//! **Not the listen path.** Playback uses VLC (`tz-playback`).
+//! **Not the listen path.** Playback output remains in `tz-playback`.
 
 mod beat;
 mod decode;
@@ -13,9 +13,8 @@ pub use beat::{
     analyze_beats_from_decoded, analyze_beats_from_mono, analyze_track_beats, BeatAnalysisResult,
 };
 pub use decode::{
-    decode_ffmpeg_raw_stereo, decode_ffmpeg_raw_stereo_with_limits, decode_track_for_analysis,
-    decode_track_for_analysis_with_limits, decode_wave_raw, decode_wave_raw_with_limits,
-    ffmpeg_available, AnalysisDecoder, AnalysisLimits, FfmpegCliDecoder, WavNativeDecoder,
+    decode_track_for_analysis, decode_track_for_analysis_with_limits, decode_wave_raw,
+    decode_wave_raw_with_limits, AnalysisDecoder, AnalysisLimits, NativeAnalysisDecoder,
     MONO_TARGET_RATE, STEREO_TARGET_RATE,
 };
 pub use envelope::{

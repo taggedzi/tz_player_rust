@@ -1,0 +1,27 @@
+[package]
+name = "tz-audio"
+description = "Format-neutral audio decode, PCM types, and bundled helper protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "tz-audio-fake-helper"
+path = "test-support/fake_helper.rs"
+test = false
+bench = false
+
+[features]
+default = ["native", "client"]
+native = ["dep:symphonia"]
+client = []
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+symphonia = { workspace = true, optional = true }

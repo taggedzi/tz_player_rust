@@ -10,23 +10,23 @@ use tokio::sync::Mutex;
 use crate::backend::{EventHandler, PlaybackBackend, PlaybackError, PlaybackLevelProvider};
 use crate::events::{BackendEvent, MediaChanged, PositionUpdated, StateChanged};
 use crate::rodio_engine::{RodioSnapshot, RodioTransport};
-use crate::rodio_worker::{RodioCmd, RodioOutputInfo, RodioWorker, RodioWorkerEventKind};
+use crate::rodio_worker::{AudioOutputInfo, RodioCmd, RodioWorker, RodioWorkerEventKind};
 use crate::{BackendStatus, LevelSample};
 
 struct RodioInner {
     started: bool,
     snapshot: RodioSnapshot,
     worker: Option<RodioWorker>,
-    output_info: Option<RodioOutputInfo>,
+    output_info: Option<AudioOutputInfo>,
 }
 
 /// Local-file playback through Rodio, Symphonia, and the system output device.
-pub struct RodioPlaybackBackend {
+pub struct AudioPlaybackBackend {
     inner: Mutex<RodioInner>,
     handler: Option<EventHandler>,
 }
 
-impl RodioPlaybackBackend {
+impl AudioPlaybackBackend {
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(RodioInner {
@@ -39,7 +39,7 @@ impl RodioPlaybackBackend {
         }
     }
 
-    pub async fn output_info(&self) -> Option<RodioOutputInfo> {
+    pub async fn output_info(&self) -> Option<AudioOutputInfo> {
         self.inner.lock().await.output_info.clone()
     }
 
@@ -92,7 +92,11 @@ impl RodioPlaybackBackend {
         output
     }
 
-    async fn submit<T, F>(&self, build: F) -> Result<T, PlaybackError>
+    async fn submit_with_timeout<T, F>(
+        &self,
+        timeout: Duration,
+        build: F,
+    ) -> Result<T, PlaybackError>
     where
         T: Send + 'static,
         F: FnOnce(mpsc::Sender<Result<T, String>>) -> RodioCmd + Send + 'static,
@@ -104,17 +108,17 @@ impl RodioPlaybackBackend {
                 return Err(PlaybackError::NotStarted);
             }
             let worker = inner.worker.as_ref().ok_or_else(|| {
-                PlaybackError::RodioUnavailable("Rodio worker not running".into())
+                PlaybackError::AudioUnavailable("Audio worker not running".into())
             })?;
             worker
                 .cmd_tx()
                 .send(build(reply))
-                .map_err(|_| PlaybackError::RodioUnavailable("Rodio worker disconnected".into()))?;
+                .map_err(|_| PlaybackError::AudioUnavailable("Audio worker disconnected".into()))?;
         }
 
         let result = tokio::task::spawn_blocking(move || {
             reply_rx
-                .recv_timeout(Duration::from_secs(30))
+                .recv_timeout(timeout)
                 .map_err(|_| "Rodio command timeout".to_string())
                 .and_then(|result| result)
         })
@@ -132,6 +136,15 @@ impl RodioPlaybackBackend {
         result
     }
 
+    async fn submit<T, F>(&self, build: F) -> Result<T, PlaybackError>
+    where
+        T: Send + 'static,
+        F: FnOnce(mpsc::Sender<Result<T, String>>) -> RodioCmd + Send + 'static,
+    {
+        self.submit_with_timeout(Duration::from_secs(30), build)
+            .await
+    }
+
     async fn transport_snapshot(&self) -> Result<RodioSnapshot, PlaybackError> {
         let snapshot = self
             .submit(|reply| RodioCmd::GetTransport { reply })
@@ -141,14 +154,14 @@ impl RodioPlaybackBackend {
     }
 }
 
-impl Default for RodioPlaybackBackend {
+impl Default for AudioPlaybackBackend {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait]
-impl PlaybackLevelProvider for RodioPlaybackBackend {
+impl PlaybackLevelProvider for AudioPlaybackBackend {
     async fn get_level_sample(&self) -> Option<LevelSample> {
         let inner = self.inner.lock().await;
         (inner.snapshot.status == BackendStatus::Playing)
@@ -158,7 +171,7 @@ impl PlaybackLevelProvider for RodioPlaybackBackend {
 }
 
 /// Silently open and close the default output device for doctor/smoke tools.
-pub fn probe_rodio_output() -> Result<RodioOutputInfo, String> {
+pub fn probe_audio_output() -> Result<AudioOutputInfo, String> {
     let worker = RodioWorker::spawn()?;
     let info = worker.output_info();
     worker.shutdown();
@@ -166,7 +179,7 @@ pub fn probe_rodio_output() -> Result<RodioOutputInfo, String> {
 }
 
 #[async_trait]
-impl PlaybackBackend for RodioPlaybackBackend {
+impl PlaybackBackend for AudioPlaybackBackend {
     fn set_event_handler(&mut self, handler: EventHandler) {
         self.handler = Some(handler);
     }
@@ -177,10 +190,10 @@ impl PlaybackBackend for RodioPlaybackBackend {
             return Ok(());
         }
         let worker = RodioWorker::spawn().map_err(|error| {
-            PlaybackError::RodioUnavailable(format!(
+            PlaybackError::AudioUnavailable(format!(
                 "Rodio could not initialize the default audio output.\n\
                  Likely cause: no enabled output device or the device is busy.\n\
-                 Next step: check operating-system sound settings and re-run `tz-player doctor --backend rodio`.\n\
+                 Next step: check operating-system sound settings and re-run `tz-player doctor --backend audio`.\n\
                  Details: {error}"
             ))
         })?;
@@ -235,8 +248,11 @@ impl PlaybackBackend for RodioPlaybackBackend {
     }
 
     async fn seek_ms(&mut self, position_ms: u64) -> Result<(), PlaybackError> {
-        self.submit(move |reply| RodioCmd::SeekMs { position_ms, reply })
-            .await?;
+        self.submit_with_timeout(Duration::from_secs(5), move |reply| RodioCmd::SeekMs {
+            position_ms,
+            reply,
+        })
+        .await?;
         self.inner.lock().await.snapshot.level_sample = None;
         Ok(())
     }
@@ -316,7 +332,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_level_provider_only_reports_playing_samples() {
-        let backend = RodioPlaybackBackend::new();
+        let backend = AudioPlaybackBackend::new();
         {
             let mut inner = backend.inner.lock().await;
             inner.snapshot.status = BackendStatus::Playing;
@@ -342,13 +358,13 @@ mod tests {
         if !output_device_tests_enabled() {
             return;
         }
-        let mut backend = RodioPlaybackBackend::new();
+        let mut backend = AudioPlaybackBackend::new();
         match backend.start().await {
             Ok(()) => {
                 assert!(backend.output_info().await.is_some());
                 backend.shutdown().await.unwrap();
             }
-            Err(PlaybackError::RodioUnavailable(message)) => {
+            Err(PlaybackError::AudioUnavailable(message)) => {
                 assert!(message.contains("default audio output"));
             }
             Err(error) => panic!("unexpected Rodio startup result: {error}"),
@@ -361,10 +377,10 @@ mod tests {
             return;
         }
         let path = silent_wav(200);
-        let mut backend = RodioPlaybackBackend::new();
+        let mut backend = AudioPlaybackBackend::new();
         match backend.start().await {
             Ok(()) => {}
-            Err(PlaybackError::RodioUnavailable(_)) => {
+            Err(PlaybackError::AudioUnavailable(_)) => {
                 fs::remove_file(path).unwrap();
                 return;
             }
@@ -398,10 +414,10 @@ mod tests {
             .join("tests")
             .join("fixtures")
             .join("tone.wav");
-        let mut backend = RodioPlaybackBackend::new();
+        let mut backend = AudioPlaybackBackend::new();
         match backend.start().await {
             Ok(()) => {}
-            Err(PlaybackError::RodioUnavailable(_)) => return,
+            Err(PlaybackError::AudioUnavailable(_)) => return,
             Err(error) => panic!("unexpected Rodio startup result: {error}"),
         }
         // Metering is intentionally pre-volume, so verification stays silent.
@@ -443,10 +459,10 @@ mod tests {
             .join("tests")
             .join("fixtures")
             .join("tone-opus.ogg");
-        let mut backend = RodioPlaybackBackend::new();
+        let mut backend = AudioPlaybackBackend::new();
         match backend.start().await {
             Ok(()) => {}
-            Err(PlaybackError::RodioUnavailable(_)) => {
+            Err(PlaybackError::AudioUnavailable(_)) => {
                 fs::remove_file(valid_path).unwrap();
                 return;
             }
@@ -488,10 +504,10 @@ mod tests {
             "tone.mka",
         ];
 
-        let mut backend = RodioPlaybackBackend::new();
+        let mut backend = AudioPlaybackBackend::new();
         match backend.start().await {
             Ok(()) => {}
-            Err(PlaybackError::RodioUnavailable(_)) => return,
+            Err(PlaybackError::AudioUnavailable(_)) => return,
             Err(error) => panic!("unexpected Rodio startup result: {error}"),
         }
         backend.set_volume(0).await.unwrap();
@@ -528,15 +544,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn muted_helper_fixture_reaches_natural_end_when_configured() {
+        if !output_device_tests_enabled() || std::env::var_os("TZ_PLAYER_AUDIO_HELPER").is_none() {
+            return;
+        }
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("tone-opus.ogg");
+        let mut backend = AudioPlaybackBackend::new();
+        match backend.start().await {
+            Ok(()) => {}
+            Err(PlaybackError::AudioUnavailable(_)) => return,
+            Err(error) => panic!("unexpected Audio startup result: {error}"),
+        }
+        backend.set_volume(0).await.unwrap();
+        backend.set_speed(4.0).await.unwrap();
+        backend
+            .play(81, &path, 0, None)
+            .await
+            .expect("configured helper-only fixture should start");
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let snapshot = loop {
+            let snapshot = backend.get_transport_snapshot().await.unwrap();
+            if snapshot.2 == BackendStatus::Stopped || Instant::now() >= deadline {
+                break snapshot;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert_eq!(snapshot.2, BackendStatus::Stopped, "{snapshot:?}");
+        assert!(snapshot.1 > 0);
+        assert_eq!(snapshot.0, snapshot.1);
+        backend.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn silent_transport_controls_work_through_output_when_device_exists() {
         if !output_device_tests_enabled() {
             return;
         }
         let path = silent_wav(3_000);
-        let mut backend = RodioPlaybackBackend::new();
+        let mut backend = AudioPlaybackBackend::new();
         match backend.start().await {
             Ok(()) => {}
-            Err(PlaybackError::RodioUnavailable(_)) => {
+            Err(PlaybackError::AudioUnavailable(_)) => {
                 fs::remove_file(path).unwrap();
                 return;
             }

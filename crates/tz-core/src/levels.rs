@@ -412,6 +412,81 @@ mod tests {
             .unwrap();
     }
 
+    fn fixture(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../tz-playback/tests/fixtures")
+            .join(name)
+    }
+
+    fn assert_all_cache_products(name: &str) {
+        let database = temp_db_path(name);
+        let service = LevelService::new(&database);
+        let media = fixture(name);
+        service.ensure_analysis(&media).unwrap();
+        assert_eq!(service.cache_flags(&media), (true, true, true, true));
+        drop(service);
+        let _ = std::fs::remove_file(database);
+    }
+
+    #[test]
+    fn native_fixture_creates_all_analysis_products() {
+        assert_all_cache_products("tone.wav");
+    }
+
+    #[test]
+    fn helper_only_fixture_creates_all_analysis_products_when_injected() {
+        if std::env::var_os("TZ_PLAYER_AUDIO_HELPER").is_none() {
+            return;
+        }
+        assert_all_cache_products("tone-opus.ogg");
+    }
+
+    #[test]
+    fn version_one_cache_rows_are_preserved_and_rebuilt_lazily_as_version_two() {
+        let database = temp_db_path("lazy_v2");
+        let media = fixture("tone.wav");
+        let service = LevelService::new(&database);
+        service.ensure_analysis(&media).unwrap();
+        drop(service);
+
+        let connection = tz_db::open_connection(&database).unwrap();
+        assert_eq!(
+            connection
+                .execute(
+                    "UPDATE analysis_cache_entries SET analysis_version = 1 WHERE analysis_version = 2",
+                    [],
+                )
+                .unwrap(),
+            4
+        );
+        drop(connection);
+
+        let service = LevelService::new(&database);
+        assert_eq!(service.cache_flags(&media), (false, false, false, false));
+        service.ensure_analysis(&media).unwrap();
+        assert_eq!(service.cache_flags(&media), (true, true, true, true));
+        drop(service);
+
+        let connection = tz_db::open_connection(&database).unwrap();
+        let old_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM analysis_cache_entries WHERE analysis_version = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let current_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM analysis_cache_entries WHERE analysis_version = 2",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!((old_count, current_count), (4, 4));
+        drop(connection);
+        let _ = std::fs::remove_file(database);
+    }
+
     #[test]
     fn maybe_prune_cache_evicts_when_over_threshold() {
         let path = temp_db_path("prune_wiring");

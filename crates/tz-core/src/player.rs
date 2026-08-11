@@ -8,9 +8,8 @@ use tokio::sync::Mutex;
 use tz_control::TransportSnapshot;
 use tz_db::{PlaylistRow, PlaylistStore};
 use tz_playback::{
-    BackendKind, BackendStatus, FakePlaybackBackend, LevelSample as PlaybackLevelSample,
-    PlaybackBackend, PlaybackError, PlaybackLevelProvider, RodioPlaybackBackend,
-    VlcPlaybackBackend,
+    AudioPlaybackBackend, BackendKind, BackendStatus, FakePlaybackBackend,
+    LevelSample as PlaybackLevelSample, PlaybackBackend, PlaybackError, PlaybackLevelProvider,
 };
 
 use crate::{clamp_speed, SPEED_MAX, SPEED_MIN, SPEED_STEP};
@@ -87,30 +86,28 @@ impl Default for PlayerState {
             artist: None,
             album: None,
             error: None,
-            backend: BackendKind::Vlc,
+            backend: BackendKind::Audio,
         }
     }
 }
 
 enum Engine {
     Fake(FakePlaybackBackend),
-    Rodio(RodioPlaybackBackend),
-    Vlc(VlcPlaybackBackend),
+    Audio(AudioPlaybackBackend),
 }
 
 impl Engine {
     fn as_backend_mut(&mut self) -> &mut dyn PlaybackBackend {
         match self {
             Self::Fake(b) => b,
-            Self::Rodio(b) => b,
-            Self::Vlc(b) => b,
+            Self::Audio(b) => b,
         }
     }
 
     async fn level_sample(&self) -> Option<PlaybackLevelSample> {
         match self {
-            Self::Rodio(backend) => backend.get_level_sample().await,
-            Self::Fake(_) | Self::Vlc(_) => None,
+            Self::Audio(backend) => backend.get_level_sample().await,
+            Self::Fake(_) => None,
         }
     }
 }
@@ -123,7 +120,7 @@ pub struct PlayerService {
     stop_requested: bool,
     default_duration_ms: u64,
     /// Last position actually reported by the backend, and when we observed
-    /// it. Backends like libVLC only refresh their internal clock every
+    /// it. Some device/decoder workers only refresh their internal clock every
     /// ~250-300ms; between real readings we extrapolate from this anchor so
     /// displayed/sampled position doesn't visibly stall.
     real_position_ms: u64,
@@ -134,8 +131,7 @@ impl PlayerService {
     pub fn new(store: PlaylistStore, backend: BackendKind) -> Self {
         let engine = match backend {
             BackendKind::Fake => Engine::Fake(FakePlaybackBackend::new()),
-            BackendKind::Rodio => Engine::Rodio(RodioPlaybackBackend::new()),
-            BackendKind::Vlc => Engine::Vlc(VlcPlaybackBackend::new()),
+            BackendKind::Audio => Engine::Audio(AudioPlaybackBackend::new()),
         };
         let state = PlayerState {
             backend,
@@ -295,7 +291,7 @@ impl PlayerService {
                 }
 
                 // Only re-anchor when the backend hands us a genuinely new
-                // reading; some backends (libVLC) only update every ~250-300ms,
+                // reading; some backend workers only update every ~250-300ms,
                 // so re-anchoring on every poll would freeze interpolation.
                 if pos != self.real_position_ms || self.real_observed_at.is_none() {
                     self.real_position_ms = pos;
@@ -692,7 +688,7 @@ mod tests {
     async fn rodio_contract_player() -> (PlayerService, i64, Vec<i64>, std::path::PathBuf) {
         let (store, playlist_id, dir) = temp_store();
         let item_ids = store.list_item_ids(playlist_id).unwrap();
-        let mut player = PlayerService::new(store, BackendKind::Rodio);
+        let mut player = PlayerService::new(store, BackendKind::Audio);
         // Natural-end playlist behavior is backend-neutral. Use the fake
         // transport under a Rodio-labelled service so this contract remains
         // deterministic and does not require a CI audio device.
@@ -776,7 +772,7 @@ mod tests {
         let repeated = player.snapshot().await;
         assert_eq!(repeated.item_id, Some(ids[1]));
         assert_eq!(repeated.status, BackendStatus::Playing);
-        assert_eq!(repeated.backend, BackendKind::Rodio);
+        assert_eq!(repeated.backend, BackendKind::Audio);
 
         player.shutdown().await.unwrap();
         let _ = fs::remove_dir_all(dir);
@@ -827,10 +823,10 @@ mod tests {
         store.add_tracks(playlist_id, &paths).unwrap();
         let ids = store.list_item_ids(playlist_id).unwrap();
 
-        let mut player = PlayerService::new(store, BackendKind::Rodio);
+        let mut player = PlayerService::new(store, BackendKind::Audio);
         match player.start().await {
             Ok(()) => {}
-            Err(PlaybackError::RodioUnavailable(_)) => {
+            Err(PlaybackError::AudioUnavailable(_)) => {
                 let _ = fs::remove_dir_all(dir);
                 return;
             }

@@ -1,3 +1,6 @@
+[graph]
+all-features = true
+
 [advisories]
 unmaintained = "all"
 unsound = "all"
@@ -26,6 +29,9 @@ allow = [
     # releases must include THIRD_PARTY_LICENSES.html and its source links.
     "MPL-2.0",
     "Unicode-3.0",
+    # The reviewed ffmpeg-next and ffmpeg-sys-next 8.1.0 crates declare WTFPL.
+    # Their license text is reproduced in THIRD_PARTY_LICENSES.html.
+    "WTFPL",
     "Zlib",
 ]
 

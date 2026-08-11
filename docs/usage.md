@@ -1,56 +1,48 @@
 # Usage (Rust tz-player)
 
-## Install dependencies
+## Install and verify
 
 ```text
 tz-player setup
 tz-player doctor
 ```
 
-- **VLC 3.x** — the default real-audio backend (libVLC loaded at runtime). A
-  complete VLC installation is required: `libvlc.dll` alone is not enough
-  because libVLC also loads `libvlccore` and codec/output plugins. The VLC 4
-  ABI changes player construction, seek signatures, and clocks to
-  microseconds; tz-player rejects it until a complete VLC 4 backend exists.
-- **Rodio** — an experimental real-audio backend selected with `--backend
-  rodio`. Rodio, Symphonia, and CPAL are compiled into the application; no VLC
-  or FFmpeg runtime is required. Linux source builds need the platform audio
-  development files (for example, `libasound2-dev` on Ubuntu).
-- **FFmpeg** — optional; supplies cached spectrum / beat / waveform analysis
-  for non-WAV files. Rodio supplies live stereo levels directly to reactive
-  visualizers when it is the selected playback backend.
+The release archive is self-contained for codec decoding: do not install VLC
+or a system FFmpeg. Keep the `audio/` directory, license files, and build/source
+metadata beside the player. `tz-player doctor` verifies the default output
+device, helper protocol, FFmpeg identity, and required package files.
 
-Install both only through a trusted operating-system package manager or another
-verified distribution channel. FFmpeg is the first `ffmpeg` executable found
-on `PATH`, while LibVLC and its plugins are dynamically loaded into the player
-process. Rodio opens the operating system's default output device and parses
-supported playback media in-process through Symphonia. Do not shadow FFmpeg
-with a binary in a user-writable directory or set `VLC_PLUGIN_PATH` to an
-untrusted directory. Run `tz-player --backend <name> doctor` after installation
-or environment changes, and separately verify which `ffmpeg` executable is
-first on `PATH`. See [the security policy](SECURITY.md) for the complete runtime
-trust boundaries and resource limits.
+Rodio/CPAL opens the operating system's default output device. Linux source
+builds need platform audio development files such as `libasound2-dev`; normal
+system audio libraries/drivers remain operating-system dependencies. Building
+the bundled decoder SDK from source also needs the tools listed in
+[`../native/ffmpeg/README.md`](../native/ffmpeg/README.md).
 
 ## Playback backends
 
 | Backend | Select | Runtime | Format policy |
 |---------|--------|---------|---------------|
-| VLC | `--backend vlc` (default) | Complete supported VLC 3.x installation | Broad compatibility through VLC plugins |
-| Rodio | `--backend rodio` | Built-in Rodio/Symphonia plus a working default audio device | MP1/2/3, FLAC, WAV/ADPCM, Ogg Vorbis, AAC, ALAC, AIFF, CAF, supported Matroska/WebM audio |
+| Audio | `--backend audio` (default) | Built-in output/native decoder plus package-relative helper | Tested native and helper union below |
 | Fake | `--backend fake` | None | No audio; deterministic UI/tests |
 
-The shared playlist accepts some formats Rodio does not decode, including Ogg
-Opus, WMA, Monkey's Audio, WavPack, AC-3, DTS, Musepack, TTA, Speex, and MIDI.
-Selecting one of those entries under Rodio reports a bounded per-track error;
-it does not silently switch to VLC. If the selected real backend cannot start,
-the TUI stays usable with Fake, identifies both the requested and effective
-backend, and preserves the requested preference for the next run.
+`--backend rodio` is a temporary compatibility alias for Audio. The old
+`--backend vlc` spelling exits with an actionable removal message. Persisted
+`vlc` and `rodio` values migrate to `audio`; Fake remains unchanged.
 
-Rodio's speed control changes pitch with rate. VLC behavior depends on its
-audio output pipeline. Pitch-preserving time stretching is not currently part
-of the playback contract.
+The native acceptance matrix is WAV/PCM, MP1/MP2/MP3, FLAC, Ogg Vorbis,
+AAC/M4A, ALAC/M4A, AIFF, CAF/PCM, and supported Matroska/WebM audio. The
+packaged helper additionally verifies Ogg Opus, WMA/ASF, Monkey's Audio,
+WavPack, AC-3, E-AC-3, DTS, Musepack SV7/SV8, TTA, and Speex. Content probing,
+not the extension alone, decides the route. MIDI is not admitted.
 
-During Rodio playback, decoded PCM is metered in lock-free 50 ms stereo peak
+If Audio cannot initialize, the TUI stays usable with Fake and shows requested
+versus effective backend status. A per-track decode failure remains an Audio
+error and does not silently change the backend.
+
+Speed control changes pitch with rate. Pitch-preserving time stretching is not
+currently part of the playback contract.
+
+During Audio playback, decoded PCM is metered in lock-free 50 ms stereo peak
 windows before volume/output processing. This live signal drives level-reactive
 visualizers and is cleared on pause, seek, stop, natural end, or error. Cached
 spectrum, beat, and waveform inputs remain backend-neutral and continue to use
@@ -61,9 +53,6 @@ the bounded analysis pipeline described below.
 ```powershell
 # Interactive TUI
 tz-player
-
-# Experimental Rodio playback
-tz-player --backend rodio
 
 # Force fake playback (no audio; good for UI-only tests)
 tz-player --backend fake
@@ -76,7 +65,7 @@ tz-player list --limit 20
 
 # Diagnostics
 tz-player doctor
-tz-player --backend rodio doctor
+tz-player --backend fake doctor
 tz-player paths
 tz-player --version
 ```
@@ -92,11 +81,14 @@ Build from source:
 cargo run -p tz-player --
 cargo build --release -p tz-player
 
-# Silent Rodio output check; does not play audio
-cargo run -p tz-playback --example rodio_smoke -- --startup-only
+# Silent output check; does not play audio
+cargo run -p tz-playback --example audio_smoke -- --startup-only
 
-# Explicit manual Rodio playback smoke
-cargo run -p tz-playback --example rodio_smoke -- path\to\track.flac
+# Explicit manual Audio playback smoke
+cargo run -p tz-playback --example audio_smoke -- path\to\track.flac
+
+# Complete audited package (after building native/ffmpeg/build/sdk)
+./scripts/package-release.ps1
 ```
 
 ## TUI themes
@@ -177,15 +169,16 @@ still available, including every action exposed by a click, wheel, or drag.
 
 Analysis caches (envelope `E`, spectrum `S`, beat `B`, waveform `W`) fill in the background on play/add. Transport shows `analysis:ESBW` when ready, or `analysis:analyzing`.
 
-Offline decoding is bounded and runs once per track even when several caches
+Offline decoding uses the same native/helper layer as playback, is bounded,
+and runs once per track even when several caches
 are missing. Defaults limit decoded stereo PCM to 256 MiB, media duration to
 one hour, and FFmpeg/native-WAV execution to two minutes. Advanced users can
 lower or raise those limits with
 `TZ_PLAYER_ANALYSIS_MAX_DECODED_BYTES`,
 `TZ_PLAYER_ANALYSIS_MAX_DURATION_SECS`, and
 `TZ_PLAYER_ANALYSIS_TIMEOUT_SECS`; compiled ceilings remain 1 GiB, six hours,
-and fifteen minutes. FFmpeg stdin is disabled, and any process that reaches a
-limit is killed and reaped.
+and fifteen minutes. The helper receives null stdin, uses bounded custom local
+file I/O, and is killed and reaped when a limit is reached.
 
 Embedded cover art is treated as untrusted input. Individual picture payloads
 are capped at 8 MiB, all pictures in a tag at 16 MiB, cumulative cover-metadata

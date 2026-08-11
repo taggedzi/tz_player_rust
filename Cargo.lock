@@ -161,6 +161,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "bindgen"
+version = "0.72.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "993776b509cfb49c750f11b8f07a46fa23e0a1386ffc01fb1e7d343efc387895"
+dependencies = [
+ "bitflags 2.13.1",
+ "cexpr",
+ "clang-sys",
+ "itertools 0.13.0",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "rustc-hash",
+ "shlex 1.3.0",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -257,7 +275,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9066c49992464636f92905fa096ec58baaa4d57ec19a5c096c68d3e25ef3d136"
 dependencies = [
  "find-msvc-tools",
- "shlex",
+ "shlex 2.0.1",
 ]
 
 [[package]]
@@ -265,6 +283,15 @@ name = "cesu8"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6d43a04d8753f35258c91f8ec639f792891f748a1edbd759cf1dcea3382ad83c"
+
+[[package]]
+name = "cexpr"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6fac387a98bb7c37292057cffc56d62ecb629900026402633ae9160df93a8766"
+dependencies = [
+ "nom",
+]
 
 [[package]]
 name = "cfg-if"
@@ -277,6 +304,17 @@ name = "cfg_aliases"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
+
+[[package]]
+name = "clang-sys"
+version = "1.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "157a8ba7b480713b56f4c09fd13fc3e0a22a5dfab8097ba61cbc5feef950788a"
+dependencies = [
+ "glob",
+ "libc",
+ "libloading",
+]
 
 [[package]]
 name = "clap"
@@ -686,6 +724,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "ffmpeg-next"
+version = "8.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f7c4bd5ab1ac61f29c634df1175d350ded29cf74c3c6d4f7030431a5ae3c7d5d"
+dependencies = [
+ "bitflags 2.13.1",
+ "ffmpeg-sys-next",
+ "libc",
+]
+
+[[package]]
+name = "ffmpeg-sys-next"
+version = "8.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a314bc0e022a33a99567ed4bd2576bd58ffd8fcff7891c29194cfecc26a62547"
+dependencies = [
+ "bindgen",
+ "cc",
+ "libc",
+ "num_cpus",
+ "pkg-config",
+ "vcpkg",
+]
+
+[[package]]
 name = "filedescriptor"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -815,6 +878,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "glob"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
+
+[[package]]
 name = "hashbrown"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -859,6 +928,12 @@ name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
+
+[[package]]
+name = "hermit-abi"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
 
 [[package]]
 name = "hex"
@@ -943,6 +1018,15 @@ name = "is_terminal_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
+
+[[package]]
+name = "itertools"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
+dependencies = [
+ "either",
+]
 
 [[package]]
 name = "itertools"
@@ -1361,6 +1445,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "num_cpus"
+version = "1.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91df4bbde75afed763b708b7eee1e8e7651e02d97f6d5dd763e89367e957b23b"
+dependencies = [
+ "hermit-abi",
+ "libc",
 ]
 
 [[package]]
@@ -1850,7 +1944,7 @@ dependencies = [
  "compact_str",
  "critical-section",
  "hashbrown 0.17.1",
- "itertools",
+ "itertools 0.14.0",
  "kasuari",
  "lru",
  "palette",
@@ -1905,7 +1999,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "indoc",
  "instability",
- "itertools",
+ "itertools 0.14.0",
  "line-clipping",
  "ratatui-core",
  "serde",
@@ -1991,6 +2085,12 @@ dependencies = [
  "libsqlite3-sys",
  "smallvec",
 ]
+
+[[package]]
+name = "rustc-hash"
+version = "2.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
 
 [[package]]
 name = "rustc_version"
@@ -2134,6 +2234,12 @@ checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
  "lazy_static",
 ]
+
+[[package]]
+name = "shlex"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "shlex"
@@ -2745,6 +2851,28 @@ dependencies = [
  "hound",
  "thiserror 2.0.19",
  "tracing",
+ "tz-audio",
+]
+
+[[package]]
+name = "tz-audio"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "symphonia",
+ "thiserror 2.0.19",
+ "tracing",
+]
+
+[[package]]
+name = "tz-audio-decoder"
+version = "0.1.0"
+dependencies = [
+ "ffmpeg-next",
+ "ffmpeg-sys-next",
+ "serde_json",
+ "tz-audio",
 ]
 
 [[package]]
@@ -2807,11 +2935,11 @@ name = "tz-playback"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "libloading",
  "rodio",
  "thiserror 2.0.19",
  "tokio",
  "tracing",
+ "tz-audio",
 ]
 
 [[package]]
@@ -2824,6 +2952,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tz-analysis",
+ "tz-audio",
  "tz-control",
  "tz-core",
  "tz-db",
@@ -2874,7 +3003,7 @@ version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "16b380a1238663e5f8a691f9039c73e1cdae598a30e9855f541d29b08b53e9a5"
 dependencies = [
- "itertools",
+ "itertools 0.14.0",
  "unicode-segmentation",
  "unicode-width",
 ]
