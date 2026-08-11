@@ -4,6 +4,13 @@ on:
   push:
     branches: [main, master]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      run_macos:
+        description: Run the manually enabled macOS check and native package jobs
+        required: false
+        default: false
+        type: boolean
 
 env:
   CARGO_TERM_COLOR: always
@@ -52,9 +59,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Normal workspace tests are hardware-independent and do not need the
-        # separately built FFmpeg SDK.
-        os: [windows-latest, ubuntu-latest, macos-latest]
+        # macOS is intentionally manual-only for now. Normal workspace tests
+        # are hardware-independent and do not need the separately built SDK.
+        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.run_macos && '["windows-latest","ubuntu-latest","macos-latest"]' || '["windows-latest","ubuntu-latest"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -92,13 +99,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: windows-latest
-            label: windows-x86_64
-          - os: ubuntu-latest
-            label: linux-x86_64
-          - os: macos-15
-            label: macos-arm64
+        # Keep the expensive macOS FFmpeg/package path available without
+        # scheduling it for pushes or pull requests.
+        include: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.run_macos && '[{"os":"windows-latest","label":"windows-x86_64"},{"os":"ubuntu-latest","label":"linux-x86_64"},{"os":"macos-15","label":"macos-arm64"}]' || '[{"os":"windows-latest","label":"windows-x86_64"},{"os":"ubuntu-latest","label":"linux-x86_64"}]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

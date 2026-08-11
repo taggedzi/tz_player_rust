@@ -65,7 +65,9 @@ For every supported release target, also verify from the extracted archive:
 - [ ] Native dependency inspection reports only packaged/system libraries.
 - [ ] Human audible native and helper-only smoke on representative hardware.
 
-Hosted CI builds and smoke-tests Windows x86-64, Linux x86-64, and macOS ARM64.
+Hosted CI automatically builds and smoke-tests Windows x86-64 and Linux x86-64.
+macOS ARM64 is disabled for automated events and can be explicitly enabled from
+the manual workflow form with `run_macos`.
 A target is supported only after its CI package and human audible checks are
 recorded; otherwise label it unverified in release notes.
 

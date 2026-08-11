@@ -15,9 +15,11 @@ system-FFmpeg analysis with one composite Audio engine:
 - Audio default plus Fake; old `vlc`/`rodio` state migrates to Audio.
 
 Windows x86-64 has a clean native SDK/package smoke recorded locally. CI now
-builds and archive-smokes Windows x86-64, Linux x86-64, and macOS ARM64.
-Linux/macOS packages remain unverified until those CI jobs and required human
-audible smokes are recorded. Exact evidence and limitations are in
+automatically builds and archive-smokes Windows x86-64 and Linux x86-64. The
+macOS ARM64 job remains available through a manual `run_macos` workflow option
+and is disabled for automated events. Linux/macOS packages remain unverified
+until those CI jobs and required human-audible smokes are recorded. Exact
+evidence and limitations are in
 [`AUDIO_ENGINE_MIGRATION_RESULTS.md`](AUDIO_ENGINE_MIGRATION_RESULTS.md).
 
 ## Completed product areas

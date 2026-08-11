@@ -154,8 +154,8 @@ live heap, process RSS, database/cache bytes, and binary size. Use
 `--preset ancient` on very old or low-memory hardware. See
 [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) for baseline and comparison guidance.
 
-CI: [`.github/workflows/ci.yml`](.github/workflows/ci.yml) (Windows, Ubuntu,
-macOS, and locked dependency policy).
+CI: [`.github/workflows/ci.yml`](.github/workflows/ci.yml) (automated Windows,
+Ubuntu, and locked dependency policy; manually enabled macOS verification).
 
 ## Docs
 

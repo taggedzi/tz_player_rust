@@ -98,7 +98,7 @@ process-sequencing deviation rather than an untested behavior gap.
 |---|---|---|---|---|
 | Windows x86-64 MSVC | Pass locally | Pass locally, including mixer/cache smoke | Not recorded | Provisionally verified; audible gate open |
 | Linux x86-64 | Pass locally at Rust 1.89 | Pass locally, including mixer/cache and pseudo-terminal TUI launch/quit | Not recorded | Provisionally verified; CI/audible gates open |
-| macOS ARM64 | CI job implemented (`macos-15`) | Not executed in this evidence run | Not recorded | Not yet supported |
+| macOS ARM64 | Manual-only CI job implemented (`macos-15`, `run_macos`) | Not executed in this evidence run | Not recorded | Not yet supported |
 
 Prepared artifacts:
 
