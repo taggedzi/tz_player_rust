@@ -51,9 +51,9 @@ try {
         & cargo about generate --locked --workspace --all-features --manifest-path Cargo.toml about.hbs --output-file $temporaryReport
         Assert-LastExitCode 'third-party license report generation'
 
-        $expectedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath THIRD_PARTY_LICENSES.html).Hash
-        $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $temporaryReport).Hash
-        if ($expectedHash -ne $actualHash) {
+        $expectedReport = (Get-Content -Raw -LiteralPath THIRD_PARTY_LICENSES.html).Replace("`r`n", "`n").Replace("`r", "`n")
+        $actualReport = (Get-Content -Raw -LiteralPath $temporaryReport).Replace("`r`n", "`n").Replace("`r", "`n")
+        if ($expectedReport -cne $actualReport) {
             throw 'THIRD_PARTY_LICENSES.html is stale. Regenerate it with cargo about generate --locked --workspace --all-features --manifest-path Cargo.toml about.hbs --output-file THIRD_PARTY_LICENSES.html and review the diff.'
         }
     }

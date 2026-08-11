@@ -68,19 +68,29 @@ else {
     if (-not (Get-Command ldd -ErrorAction SilentlyContinue)) { throw 'ldd is required to inspect Linux package dependencies.' }
     $binaries = @(Get-ChildItem -LiteralPath $root -File | Where-Object { $_.Name -eq 'tz-audio-decoder' -or $_.Name -match '\.so(\.|$)' })
     $allowedSystem = 'ld-linux', 'libc.so', 'libdl.so', 'libgcc_s.so', 'libm.so', 'libpthread.so', 'librt.so'
-    foreach ($binary in $binaries) {
-        $lines = & ldd $binary.FullName
-        if ($LASTEXITCODE -ne 0 -or $lines -match 'not found') { throw "Unresolved dependency for $($binary.Name): $($lines -join '; ')" }
-        foreach ($line in $lines) {
-            if ($line -notmatch '^\s*([^\s]+)\s+=>\s+(.+?)\s+\(0x[0-9a-fA-F]+\)\s*$') { continue }
-            $name = $Matches[1]
-            $path = $Matches[2]
-            if ($path.StartsWith($root, [StringComparison]::Ordinal) -or
-                ($allowedSystem | Where-Object { $name.StartsWith($_, [StringComparison]::Ordinal) })) {
-                continue
+    $originalLdLibraryPath = $env:LD_LIBRARY_PATH
+    try {
+        # The CI build exports the SDK directory for compilation. Put only the
+        # staged package first so ldd validates the package's own libraries,
+        # rather than accepting a dependency resolved from the build SDK.
+        $env:LD_LIBRARY_PATH = $root
+        foreach ($binary in $binaries) {
+            $lines = & ldd $binary.FullName
+            if ($LASTEXITCODE -ne 0 -or $lines -match 'not found') { throw "Unresolved dependency for $($binary.Name): $($lines -join '; ')" }
+            foreach ($line in $lines) {
+                if ($line -notmatch '^\s*([^\s]+)\s+=>\s+(.+?)\s+\(0x[0-9a-fA-F]+\)\s*$') { continue }
+                $name = $Matches[1]
+                $path = $Matches[2]
+                if ($path.StartsWith($root, [StringComparison]::Ordinal) -or
+                    ($allowedSystem | Where-Object { $name.StartsWith($_, [StringComparison]::Ordinal) })) {
+                    continue
+                }
+                throw "Unexpected non-packaged dependency for $($binary.Name): $name => $path"
             }
-            throw "Unexpected non-packaged dependency for $($binary.Name): $name => $path"
         }
+    }
+    finally {
+        $env:LD_LIBRARY_PATH = $originalLdLibraryPath
     }
 }
 
