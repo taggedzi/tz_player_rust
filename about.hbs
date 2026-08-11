@@ -1,0 +1,59 @@
+<!--
+Copyright 2020-2024, Embark Studios
+SPDX-License-Identifier: MIT OR Apache-2.0
+
+Adapted from cargo-about's default template for tz-player.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>tz-player third-party licenses</title>
+    <style>
+        :root { color-scheme: light dark; }
+        body { font-family: sans-serif; line-height: 1.45; margin: 2rem auto; max-width: 70rem; padding: 0 1rem; }
+        .license-text { border: 1px solid #8888; max-height: 24rem; overflow: auto; padding: 1rem; white-space: pre-wrap; }
+    </style>
+</head>
+<body>
+    <main>
+        <h1>tz-player third-party licenses</h1>
+        <p>
+            tz-player's original source code is licensed under the MIT License.
+            The third-party components listed here remain under their respective
+            licenses; the MIT License does not replace those terms.
+        </p>
+        <p>
+            The exact source release for every Rust dependency is available from
+            its version-specific crates.io link below. In particular, source for
+            components covered by the Mozilla Public License 2.0 is available at
+            those links under the MPL-2.0 terms reproduced in this document.
+        </p>
+
+        <h2>License overview</h2>
+        <ul>
+            {{#each overview}}
+            <li><a href="#{{id}}">{{name}}</a> ({{count}} uses)</li>
+            {{/each}}
+        </ul>
+
+        <h2>License texts and components</h2>
+        {{#each licenses}}
+        <section>
+            {{#if first_of_kind}}<h3 id="{{id}}">{{name}}</h3>{{/if}}
+            <h4>{{name}}</h4>
+            <p>Used by:</p>
+            <ul>
+                {{#each used_by}}
+                <li>
+                    <a href="https://crates.io/crates/{{crate.name}}/{{crate.version}}">{{crate.name}} {{crate.version}}</a>
+                </li>
+                {{/each}}
+            </ul>
+            <pre class="license-text">{{text}}</pre>
+        </section>
+        {{/each}}
+    </main>
+</body>
+</html>

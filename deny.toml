@@ -10,6 +10,10 @@ ignore = [
 [licenses]
 confidence-threshold = 0.8
 unused-allowed-license = "deny"
+# Test-only crates are not shipped. Build dependencies remain in scope because
+# they can influence code in the release artifact.
+include-dev = false
+include-build = true
 allow = [
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
@@ -18,6 +22,8 @@ allow = [
     "BSL-1.0",
     "ISC",
     "MIT",
+    # MPL-2.0 is intentionally allowed for option-ext and Symphonia. Binary
+    # releases must include THIRD_PARTY_LICENSES.html and its source links.
     "MPL-2.0",
     "Unicode-3.0",
     "Zlib",

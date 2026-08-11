@@ -32,12 +32,17 @@ jobs:
         run: |
           cargo install cargo-audit --version 0.22.2 --locked
           cargo install cargo-deny --version 0.20.2 --locked
+          cargo install cargo-about --version 0.9.1 --locked --features cli
 
       - name: Audit RustSec advisories
         run: cargo audit
 
       - name: Enforce dependency policy
         run: cargo deny --locked check advisories bans licenses sources
+
+      - name: Verify distributable third-party notices
+        shell: pwsh
+        run: ./scripts/check-distribution-licenses.ps1
 
   check:
     name: Check / Test / Clippy

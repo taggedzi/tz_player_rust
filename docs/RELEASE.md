@@ -12,6 +12,8 @@ Use this when cutting a local or public release of the `tz-player` binary.
 - [ ] `cargo audit` (every warning is absent or matches an unexpired exception
       in `docs/SECURITY.md` and `deny.toml`)
 - [ ] `cargo deny --locked check advisories bans licenses sources`
+- [ ] `./scripts/check-distribution-licenses.ps1` (license policy, current
+      third-party report, and dependency `NOTICE` scan)
 - [ ] No temporary security exception is past its documented expiration date
 - [ ] Malicious-media regression tests pass:
       `cargo test -p tz-analysis decode::tests`,
@@ -35,13 +37,19 @@ Use this when cutting a local or public release of the `tz-player` binary.
       forward/backward seek, 0.5x/1x/2x/4x, live visualizer response, stop, and
       natural next-track advance
 
-## Build
+## Build and package
 
 ```powershell
-cargo build --release -p tz-player
+./scripts/package-release.ps1
 ```
 
-Artifact:
+The script runs the distribution-license gate, builds with `--locked`, and
+creates an archive containing the executable, `LICENSE`,
+`THIRD_PARTY_LICENSES.html`, `NATIVE_DEPENDENCIES.md`,
+`licenses/LGPL-2.1.txt`, and `README.md`. Distribute that archive as a unit; do
+not attach the bare executable by itself.
+
+Build output used by the packager:
 
 | OS | Path |
 |----|------|
@@ -102,7 +110,8 @@ Bump that crate version (and workspace if desired) before tagging.
 1. Update `docs/PROGRESS.md` status line if needed.
 2. Commit release notes / version bump.
 3. Tag `vX.Y.Z` and push.
-4. Attach `tz-player` release binary + short install notes (VLC + optional FFmpeg).
+4. Attach the archive from `target/dist/` + short install notes (VLC + optional
+   FFmpeg).
 
 ## Known limitations (document in release notes)
 

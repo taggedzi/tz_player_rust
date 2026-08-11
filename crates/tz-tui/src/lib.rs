@@ -74,6 +74,8 @@ async fn ui_loop(
     let mut browse_scroll_offset = 0usize;
     let mut editor_was_active = runtime.input_mode == "editor";
     let mut mouse_state = MouseState::default();
+    let mut visualizer_clock = VisualizerFrameClock::new(runtime.app_state.visualizer_fps);
+    let mut viz_lines = Vec::new();
 
     loop {
         runtime.tick().await;
@@ -128,44 +130,49 @@ async fn ui_loop(
         // spending CPU animating something invisible, and since the host
         // itself isn't torn down, showing it again resumes instantly rather
         // than restarting from scratch.
-        let viz_lines = if let Some(viz_panel) = viz_panel {
+        if let Some(viz_panel) = viz_panel {
             let viz_w = viz_panel.width.saturating_sub(2).max(1); // borders
             let viz_h = viz_panel.height.saturating_sub(2).max(1);
-            let frame_in = VisualizerFrameInput {
-                frame_index: 0,
-                width: viz_w,
-                height: viz_h,
-                status: snap.status.clone(),
-                position_s: snap.position_ms as f64 / 1000.0,
-                duration_s: if snap.duration_ms > 0 {
-                    Some(snap.duration_ms as f64 / 1000.0)
-                } else {
-                    None
-                },
-                volume: f64::from(snap.volume) / 100.0,
-                speed: snap.speed,
-                title: snap.title.clone(),
-                track_path: snap.track_path.clone(),
-                level_left: snap.level_left,
-                level_right: snap.level_right,
-                level_source: snap.level_source.clone(),
-                spectrum_bands: snap.spectrum_bands.clone(),
-                spectrum_source: snap.spectrum_source.clone(),
-                beat_strength: snap.beat_strength,
-                beat_is_onset: snap.beat_is_onset,
-                beat_bpm: snap.beat_bpm,
-                beat_source: snap.beat_source.clone(),
-                waveform_min_left: snap.waveform_min_left,
-                waveform_max_left: snap.waveform_max_left,
-                waveform_min_right: snap.waveform_min_right,
-                waveform_max_right: snap.waveform_max_right,
-                waveform_source: snap.waveform_source.clone(),
-                waveform_history: snap.waveform_history.clone(),
-            };
-            viz.render(frame_in)
-        } else {
-            Vec::new()
-        };
+            // Input events can wake the outer loop much faster than the configured
+            // visualizer FPS. In particular, terminals emit a stream of mouse-move
+            // events while the pointer crosses the pane. Only advance plugin state
+            // when its wall-clock frame is due; ordinary UI redraws reuse the last
+            // rendered lines.
+            if visualizer_clock.frame_due(Instant::now()) {
+                let frame_in = VisualizerFrameInput {
+                    frame_index: 0,
+                    width: viz_w,
+                    height: viz_h,
+                    status: snap.status.clone(),
+                    position_s: snap.position_ms as f64 / 1000.0,
+                    duration_s: if snap.duration_ms > 0 {
+                        Some(snap.duration_ms as f64 / 1000.0)
+                    } else {
+                        None
+                    },
+                    volume: f64::from(snap.volume) / 100.0,
+                    speed: snap.speed,
+                    title: snap.title.clone(),
+                    track_path: snap.track_path.clone(),
+                    level_left: snap.level_left,
+                    level_right: snap.level_right,
+                    level_source: snap.level_source.clone(),
+                    spectrum_bands: snap.spectrum_bands.clone(),
+                    spectrum_source: snap.spectrum_source.clone(),
+                    beat_strength: snap.beat_strength,
+                    beat_is_onset: snap.beat_is_onset,
+                    beat_bpm: snap.beat_bpm,
+                    beat_source: snap.beat_source.clone(),
+                    waveform_min_left: snap.waveform_min_left,
+                    waveform_max_left: snap.waveform_max_left,
+                    waveform_min_right: snap.waveform_min_right,
+                    waveform_max_right: snap.waveform_max_right,
+                    waveform_source: snap.waveform_source.clone(),
+                    waveform_history: snap.waveform_history.clone(),
+                };
+                viz_lines = viz.render(frame_in);
+            }
+        }
 
         terminal
             .draw(|f| {
@@ -211,7 +218,14 @@ async fn ui_loop(
             })
             .map_err(|e| TuiError::Io(e.to_string()))?;
 
-        if event::poll(Duration::from_millis(80)).map_err(|e| TuiError::Io(e.to_string()))? {
+        let poll_timeout = if viz_panel.is_some() {
+            visualizer_clock
+                .time_until_frame(Instant::now())
+                .min(Duration::from_millis(80))
+        } else {
+            Duration::from_millis(80)
+        };
+        if event::poll(poll_timeout).map_err(|e| TuiError::Io(e.to_string()))? {
             match event::read().map_err(|e| TuiError::Io(e.to_string()))? {
                 Event::Key(key) => {
                     if key.kind != KeyEventKind::Press {
@@ -245,6 +259,44 @@ async fn ui_loop(
         }
     }
     Ok(())
+}
+
+/// Limits stateful visualizer renders to their configured wall-clock cadence.
+///
+/// The surrounding UI may redraw more often in response to keyboard or mouse
+/// events, but those redraws must not become extra animation ticks.
+struct VisualizerFrameClock {
+    interval: Duration,
+    next_frame_at: Instant,
+}
+
+impl VisualizerFrameClock {
+    fn new(fps: u32) -> Self {
+        Self::new_at(fps, Instant::now())
+    }
+
+    fn new_at(fps: u32, now: Instant) -> Self {
+        let interval = Duration::from_secs_f64(1.0 / f64::from(fps.max(1)));
+        Self {
+            interval,
+            next_frame_at: now,
+        }
+    }
+
+    fn frame_due(&mut self, now: Instant) -> bool {
+        if now < self.next_frame_at {
+            return false;
+        }
+
+        // Schedule from the actual render time instead of catching up missed
+        // frames in a burst after a stall.
+        self.next_frame_at = now.checked_add(self.interval).unwrap_or(now);
+        true
+    }
+
+    fn time_until_frame(&self, now: Instant) -> Duration {
+        self.next_frame_at.saturating_duration_since(now)
+    }
 }
 
 fn editor_transitioned(was_active: bool, input_mode: &str) -> bool {
@@ -1658,6 +1710,30 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use std::path::PathBuf;
+
+    #[test]
+    fn input_event_flood_cannot_advance_visualizer_clock() {
+        let start = Instant::now();
+        let mut clock = VisualizerFrameClock::new_at(10, start);
+
+        assert!(
+            clock.frame_due(start),
+            "the initial frame renders immediately"
+        );
+
+        // Model thousands of mouse-move wakeups inside one 100 ms frame.
+        let event_time = start + Duration::from_millis(50);
+        for _ in 0..5_000 {
+            assert!(!clock.frame_due(event_time));
+        }
+        assert_eq!(
+            clock.time_until_frame(event_time),
+            Duration::from_millis(50)
+        );
+
+        assert!(clock.frame_due(start + Duration::from_millis(100)));
+        assert!(!clock.frame_due(start + Duration::from_millis(100)));
+    }
 
     #[test]
     fn main_layout_gives_playlist_the_full_width_when_visualizer_is_hidden() {

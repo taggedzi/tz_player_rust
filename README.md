@@ -138,6 +138,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 cargo audit
 cargo deny --locked check advisories bans licenses sources
+./scripts/check-distribution-licenses.ps1
 ```
 
 Opt-in performance and resource suite:
@@ -159,6 +160,7 @@ macOS, and locked dependency policy).
 
 - [`docs/usage.md`](docs/usage.md) — CLI + TUI guide  
 - [`docs/RELEASE.md`](docs/RELEASE.md) — release checklist  
+- [`docs/LICENSING.md`](docs/LICENSING.md) — dependency-license policy and distributable notices
 - [`docs/SECURITY.md`](docs/SECURITY.md) — trust boundaries + dependency policy
 - [`docs/SPEC.md`](docs/SPEC.md) — product scope  
 - [`docs/architecture.md`](docs/architecture.md) — crate boundaries  
@@ -171,4 +173,11 @@ macOS, and locked dependency policy).
 
 ## License
 
-MIT — see `LICENSE`.
+Project-authored code is MIT — see `LICENSE`. Binary releases also contain
+third-party code under compatible licenses, including Apache-2.0 and MPL-2.0;
+their terms and exact source links are preserved in
+[`THIRD_PARTY_LICENSES.html`](THIRD_PARTY_LICENSES.html). Use
+[`scripts/package-release.ps1`](scripts/package-release.ps1) so those files stay
+with the distributed executable. Native/runtime boundaries such as ALSA,
+libVLC, and FFmpeg are recorded in
+[`NATIVE_DEPENDENCIES.md`](NATIVE_DEPENDENCIES.md).
