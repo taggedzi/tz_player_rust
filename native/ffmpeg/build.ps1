@@ -91,16 +91,21 @@ $patchPath = Join-Path $root ($patchRelativePath -replace '/', '\')
 if (-not (Test-Path -LiteralPath $patchPath -PathType Leaf)) { throw "Required FFmpeg patch is missing: $patchPath" }
 $actualPatchSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $patchPath).Hash.ToLowerInvariant()
 if ($actualPatchSha -ne $expectedPatchSha) { throw "FFmpeg patch SHA-256 mismatch: expected $expectedPatchSha, got $actualPatchSha" }
+$speexSourcePath = Join-Path $sourceDir 'libavcodec\speexdec.c'
+$auditedSpeexFix = 's->frame_size = FFMIN(s->frame_size << (s->mode > 1), NB_FRAME_SIZE << s->mode);'
 $originalGitCeiling = $env:GIT_CEILING_DIRECTORIES
 $env:GIT_CEILING_DIRECTORIES = Split-Path -Parent $sourceDir
 Push-Location $sourceDir
 try {
-    & git apply --reverse --check $patchPath 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        & git apply --check $patchPath
-        if ($LASTEXITCODE -ne 0) { throw 'FFmpeg source does not match the audited Speex patch.' }
-        & git apply $patchPath
-        if ($LASTEXITCODE -ne 0) { throw 'Could not apply the audited Speex patch.' }
+    $hasAuditedSpeexFix = Select-String -LiteralPath $speexSourcePath -SimpleMatch -Pattern $auditedSpeexFix -Quiet
+    if (-not $hasAuditedSpeexFix) {
+        & git apply --reverse --check $patchPath 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            & git apply --check $patchPath
+            if ($LASTEXITCODE -ne 0) { throw 'FFmpeg source does not match the audited Speex patch.' }
+            & git apply $patchPath
+            if ($LASTEXITCODE -ne 0) { throw 'Could not apply the audited Speex patch.' }
+        }
     }
 }
 finally {

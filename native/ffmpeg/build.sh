@@ -31,7 +31,10 @@ expected_patch_sha_lower="$(printf '%s' "$expected_patch_sha" | tr '[:upper:]' '
 [ "$actual_patch_sha_lower" = "$expected_patch_sha_lower" ] || { echo "FFmpeg patch SHA-256 mismatch" >&2; exit 1; }
 command -v git >/dev/null
 git_ceiling="$(dirname "$source_dir")"
-if GIT_CEILING_DIRECTORIES="$git_ceiling" git -C "$source_dir" apply --reverse --check "$patch_file" >/dev/null 2>&1; then
+audited_speex_fix='s->frame_size = FFMIN(s->frame_size << (s->mode > 1), NB_FRAME_SIZE << s->mode);'
+if grep -Fqx -- "$audited_speex_fix" "$source_dir/libavcodec/speexdec.c"; then
+  : # The audited fix is already present in this reusable or upstream-fixed source tree.
+elif GIT_CEILING_DIRECTORIES="$git_ceiling" git -C "$source_dir" apply --reverse --check "$patch_file" >/dev/null 2>&1; then
   : # The audited patch is already present in this reusable source tree.
 elif GIT_CEILING_DIRECTORIES="$git_ceiling" git -C "$source_dir" apply --check "$patch_file"; then
   GIT_CEILING_DIRECTORIES="$git_ceiling" git -C "$source_dir" apply "$patch_file"
