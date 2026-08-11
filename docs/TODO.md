@@ -112,6 +112,31 @@ All four done.
 - [x] Visualizer pane collapse/maximize — there was no existing "disabled visualizer" state to key off (`z` only cycled the 26 built-in plugins, no off/none stop), so this needed a decision: added a dedicated `Shift+Z` toggle (`crates/tz-tui/src/lib.rs`) rather than folding an off-state into the `z` cycle. Hiding gives the playlist the full width (`main_layout(area, visualizer_hidden) -> (Rect, Option<Rect>)`, shared by both the pre-render sizing pass and the actual draw pass — replaces the old duplicated `Layout::split` calls, which is also a correctness fix since a hidden pane now can't index out of bounds by construction). While hidden the visualizer host itself isn't torn down but its `render()` isn't called either (frozen, not ticking, to avoid animating something invisible) — showing it again resumes instantly rather than reinitializing. State is session-only (`AppRuntime::visualizer_hidden`, not written to `AppState`); if that turns out to be wanted across restarts, that's Tier 4 config territory. TDD'd `main_layout` as a pure function plus the `Shift+Z`/`z` key dispatch via `handle_key`. Documented in the help modal and `README.md`/`docs/usage.md`/`docs/PROGRESS.md`.
 
 ## Tier 3 — Larger feature work
+- [ ] **Next major goal: broaden playback compatibility with FFmpeg-backed PCM
+  streaming.** Route files rejected by the native decoder through the packaged
+  FFmpeg helper, stream normalized PCM to playback and visualizers, and keep
+  buffering bounded instead of loading an entire WAV into memory. The goal,
+  phases, constraints, and completion criteria are documented in
+  [`FFMPEG_PLAYBACK_EXPANSION_GOAL.md`](FFMPEG_PLAYBACK_EXPANSION_GOAL.md).
+- [ ] **Major goal: add offline MIDI playback with a bundled, replaceable
+  SoundFont.** Treat MIDI as a synthesis path (`MIDI events -> sequencer and
+  SoundFont synth -> normalized PCM -> existing Rodio mixer`), not as an
+  ordinary compressed-audio decoder. Evaluate FluidSynth as the primary
+  cross-platform engine, with support for General MIDI/GS behavior including
+  tempo maps, program changes, percussion, sustain, pitch bend, resets, and
+  correct duration/tail handling. Package a vetted default SoundFont so the
+  feature works on a clean offline install, while allowing users to select and
+  persist a custom SF2/SF3 bank with validation and a safe built-in fallback.
+  The default bank must be approved for redistribution in software; preserve
+  its exact upstream license, source/version metadata, checksum, and notices
+  in the release and third-party-license documentation. GeneralUser GS is a
+  candidate pending license/provenance confirmation, not an assumed asset.
+  Plan bounded streaming, synth-state reset/replay seeking, MIDI-specific
+  speed semantics, visualizer level integration, malformed-input/resource
+  limits, and cross-platform release smoke tests. Do not bundle copyrighted
+  MIDI content merely as test data. Completion requires an offline default
+  install, custom SoundFont replacement, stable playback through the existing
+  transport/UI, and reviewed distribution notices.
 - [x] **Dual-pane staged playlist editor** — implemented in `crates/tz-core`, `crates/tz-db`, and `crates/tz-tui` using the approved design in `docs/superpowers/specs/2026-08-09-dual-pane-playlist-editor-design.md`. `a` opens a full-screen files/playlist editor; edits use transient SQLite draft rows; F10/Ctrl+Enter applies after a successful stop; saved playlists support load/save-as/rename/delete with the active Default playlist protected. Recursive scans are iterative, deterministic, and skip symlink directories. Portable-media path rebasing remains a separate future feature.
 - [x] **Port every Python visualization.** The Rust host preserves all 25
   built-in Python plugin IDs and adds `spectrum.bars` for 26 total. The

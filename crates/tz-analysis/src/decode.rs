@@ -310,7 +310,7 @@ mod tests {
 
         let path = one_second_wav("permission-denied");
         let original = std::fs::metadata(&path).unwrap().permissions();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0)).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o0)).unwrap();
         let error = decode_track_for_analysis(&path).expect_err("unreadable media must fail");
         std::fs::set_permissions(&path, original).unwrap();
         std::fs::remove_file(path).unwrap();
