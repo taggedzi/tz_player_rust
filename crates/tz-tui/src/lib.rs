@@ -482,7 +482,54 @@ fn transport_mouse_command(
             speed: 0.5 + ratio_at(mouse.column, controls.speed) * 3.5,
         });
     }
+    if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+        let (repeat, shuffle) = transport_status_control_areas(controls.status, snapshot);
+        if rect_contains(repeat, mouse.column, mouse.row) {
+            return Some(Command::CycleRepeat);
+        }
+        if rect_contains(shuffle, mouse.column, mouse.row) {
+            return Some(Command::ToggleShuffle);
+        }
+    }
     None
+}
+
+fn transport_status_control_areas(
+    area: Rect,
+    snapshot: &tz_control::TransportSnapshot,
+) -> (Rect, Rect) {
+    let status_width = snapshot.status.chars().count() as u16;
+    let repeat_width = snapshot.repeat_mode.chars().count() as u16;
+    let shuffle_width = if snapshot.shuffle { 2 } else { 3 };
+    let (repeat_offset, repeat_label_width, shuffle_gap, shuffle_label_width): (
+        u16,
+        u16,
+        u16,
+        u16,
+    ) = if area.width >= 52 {
+        (status_width.saturating_add(13), 8, 5, 9)
+    } else {
+        (status_width.saturating_add(2), 4, 2, 5)
+    };
+    let repeat = status_control_rect(
+        area,
+        repeat_offset,
+        repeat_label_width.saturating_add(repeat_width),
+    );
+    let shuffle = status_control_rect(
+        area,
+        repeat_offset
+            .saturating_add(repeat_label_width)
+            .saturating_add(repeat_width)
+            .saturating_add(shuffle_gap),
+        shuffle_label_width.saturating_add(shuffle_width),
+    );
+    (repeat, shuffle)
+}
+
+fn status_control_rect(area: Rect, offset: u16, width: u16) -> Rect {
+    let visible_width = width.min(area.width.saturating_sub(offset));
+    Rect::new(area.x.saturating_add(offset), area.y, visible_width, 1)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1186,7 +1233,13 @@ fn draw_editor_screen(f: &mut ratatui::Frame<'_>, area: Rect, runtime: &AppRunti
         .skip(left_start)
         .take(left_visible)
         .map(|(i, e)| {
-            let marker = if e.is_dir { "/" } else { "" };
+            let label = if e.is_parent {
+                "↑ ../".to_string()
+            } else if e.is_dir {
+                format!("{}/", e.name)
+            } else {
+                e.name.clone()
+            };
             let style = if runtime.editor_focus == EditorFocus::Files && i == runtime.browse_cursor
             {
                 Style::default()
@@ -1196,7 +1249,7 @@ fn draw_editor_screen(f: &mut ratatui::Frame<'_>, area: Rect, runtime: &AppRunti
             } else {
                 Style::default()
             };
-            ListItem::new(format!("{}{}", e.name, marker)).style(style)
+            ListItem::new(label).style(style)
         })
         .collect::<Vec<_>>();
     f.render_widget(
@@ -1346,7 +1399,9 @@ fn draw_browse_overlay(
             .take(visible)
             .map(|(i, entry)| {
                 let is_cursor = i == cursor;
-                let label = if entry.is_dir {
+                let label = if entry.is_parent {
+                    "↑ ../".to_string()
+                } else if entry.is_dir {
                     format!("{}/", entry.name)
                 } else {
                     entry.name.clone()
@@ -1986,13 +2041,8 @@ mod tests {
         std::fs::write(dir.join("beta.mp3"), b"").unwrap();
         runtime.last_browse_dir = Some(dir.clone());
         runtime.handle(Command::RequestAddFolder).await.unwrap();
-        // Note: `bare_test_runtime` nests `log_dir` under `data_dir`, so
-        // `browse_entries` is actually [logs/, alpha.mp3, beta.mp3] (dirs
-        // sort first) and this second cursor step lands on alpha.mp3, not
-        // beta.mp3 as the name suggests. Left as-is (matches the task
-        // brief's test verbatim) since the assertions below don't depend
-        // on which entry the cursor highlights — only that both filenames
-        // are rendered.
+        // The synthetic parent entry is first, followed by directories and
+        // media files from the current directory.
         runtime.handle(Command::BrowseDown).await.unwrap();
 
         let backend = TestBackend::new(80, 24);
@@ -2003,6 +2053,10 @@ mod tests {
             .unwrap();
         let text = buffer_text(&terminal.backend().buffer().clone());
 
+        assert!(
+            text.contains("↑ ../"),
+            "expected an activatable parent-directory cue:\n{text}"
+        );
         assert!(
             text.contains("alpha.mp3"),
             "expected both entries listed:\n{text}"
@@ -2037,6 +2091,7 @@ mod tests {
             .unwrap();
         let text = buffer_text(&terminal.backend().buffer().clone());
         assert!(text.contains("Files"));
+        assert!(text.contains("↑ ../"));
         assert!(text.contains("Staged playlist (1)"));
         assert!(text.contains("alpha.mp3"));
 
@@ -2488,13 +2543,11 @@ mod tests {
     }
 
     #[test]
-    fn transport_mouse_hitboxes_cover_seek_volume_and_speed() {
+    fn transport_mouse_hitboxes_cover_sliders_repeat_and_shuffle() {
         let area = Rect::new(0, 10, 100, 5);
         let controls = transport_control_areas(area).unwrap();
-        let snapshot = tz_control::TransportSnapshot {
-            duration_ms: 10_000,
-            ..Default::default()
-        };
+        let mut snapshot = transport_snapshot_fixture();
+        snapshot.duration_ms = 10_000;
 
         assert_eq!(
             transport_mouse_command(
@@ -2534,6 +2587,114 @@ mod tests {
             ),
             Some(Command::SetSpeed { speed: 4.0 })
         );
+        assert_eq!(
+            transport_mouse_command(
+                mouse_event(
+                    MouseEventKind::Down(MouseButton::Left),
+                    21,
+                    controls.status.y
+                ),
+                area,
+                &snapshot,
+            ),
+            Some(Command::CycleRepeat)
+        );
+        assert_eq!(
+            transport_mouse_command(
+                mouse_event(
+                    MouseEventKind::Down(MouseButton::Left),
+                    37,
+                    controls.status.y
+                ),
+                area,
+                &snapshot,
+            ),
+            Some(Command::ToggleShuffle)
+        );
+        assert_eq!(
+            transport_mouse_command(
+                mouse_event(
+                    MouseEventKind::Drag(MouseButton::Left),
+                    21,
+                    controls.status.y
+                ),
+                area,
+                &snapshot,
+            ),
+            None
+        );
+
+        let narrow_area = Rect::new(0, 10, 36, 5);
+        let narrow_controls = transport_control_areas(narrow_area).unwrap();
+        assert_eq!(
+            transport_mouse_command(
+                mouse_event(
+                    MouseEventKind::Down(MouseButton::Left),
+                    10,
+                    narrow_controls.status.y,
+                ),
+                narrow_area,
+                &snapshot,
+            ),
+            Some(Command::CycleRepeat)
+        );
+        assert_eq!(
+            transport_mouse_command(
+                mouse_event(
+                    MouseEventKind::Down(MouseButton::Left),
+                    19,
+                    narrow_controls.status.y,
+                ),
+                narrow_area,
+                &snapshot,
+            ),
+            Some(Command::ToggleShuffle)
+        );
+    }
+
+    #[tokio::test]
+    async fn clicking_repeat_and_shuffle_updates_player_state() {
+        let mut runtime = find_test_runtime("mouse_transport_toggles").await;
+        let areas = MouseAreas {
+            screen: Rect::new(0, 0, 80, 24),
+            playlist: Rect::new(0, 3, 40, 11),
+            transport: Rect::new(0, 14, 80, 5),
+        };
+        let controls = transport_control_areas(areas.transport).unwrap();
+        let mut mouse_state = MouseState::default();
+        let snapshot = runtime.snapshot().await;
+        let (repeat, _) = transport_status_control_areas(controls.status, &snapshot);
+
+        handle_mouse(
+            &mut runtime,
+            mouse_event(MouseEventKind::Down(MouseButton::Left), repeat.x, repeat.y),
+            areas,
+            0,
+            &snapshot,
+            &mut mouse_state,
+        )
+        .await;
+        let snapshot = runtime.snapshot().await;
+        assert_eq!(snapshot.repeat_mode, "one");
+
+        let (_, shuffle) = transport_status_control_areas(controls.status, &snapshot);
+        handle_mouse(
+            &mut runtime,
+            mouse_event(
+                MouseEventKind::Down(MouseButton::Left),
+                shuffle.x,
+                shuffle.y,
+            ),
+            areas,
+            0,
+            &snapshot,
+            &mut mouse_state,
+        )
+        .await;
+        assert!(runtime.snapshot().await.shuffle);
+
+        runtime.player.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
     }
 
     #[tokio::test]

@@ -737,7 +737,9 @@ impl AppRuntime {
             Command::EditorEnter => {
                 if self.editor_focus == EditorFocus::Files {
                     if let Some(entry) = self.browse_entries.get(self.browse_cursor).cloned() {
-                        if entry.is_dir {
+                        if entry.is_parent {
+                            self.editor_parent();
+                        } else if entry.is_dir {
                             self.set_editor_dir(entry.path);
                         } else {
                             self.editor_add_highlighted(false).await?;
@@ -763,7 +765,7 @@ impl AppRuntime {
                 let dir = self.last_browse_dir.clone().unwrap_or_else(|| {
                     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
                 });
-                self.browse_entries = list_dir(&dir);
+                self.browse_entries = browse_entries(&dir);
                 self.browse_dir = Some(dir.clone());
                 self.last_browse_dir = Some(dir);
                 self.browse_cursor = 0;
@@ -783,7 +785,9 @@ impl AppRuntime {
             }
             Command::BrowseEnter => {
                 if let Some(entry) = self.browse_entries.get(self.browse_cursor).cloned() {
-                    if entry.is_dir {
+                    if entry.is_parent {
+                        self.browse_parent();
+                    } else if entry.is_dir {
                         if std::fs::read_dir(&entry.path).is_err() {
                             // Keep the browser at the current (still-valid)
                             // directory rather than switching into one we
@@ -792,7 +796,7 @@ impl AppRuntime {
                             // permissions issue.
                             self.set_warning(format!("Can't open '{}'", entry.name));
                         } else {
-                            self.browse_entries = list_dir(&entry.path);
+                            self.browse_entries = browse_entries(&entry.path);
                             self.browse_dir = Some(entry.path.clone());
                             self.last_browse_dir = Some(entry.path);
                             self.browse_cursor = 0;
@@ -806,38 +810,18 @@ impl AppRuntime {
             }
             Command::BrowseSelect => {
                 if let Some(entry) = self.browse_entries.get(self.browse_cursor).cloned() {
-                    self.add_paths_internal(&[entry.path])?;
-                    if let Some(dir) = self.browse_dir.clone() {
-                        self.last_browse_dir = Some(dir);
-                    }
-                    self.input_mode = "normal".into();
-                }
-            }
-            Command::BrowseParent => {
-                if let Some(dir) = self.browse_dir.clone() {
-                    match dir.parent() {
-                        Some(parent) => {
-                            if std::fs::read_dir(parent).is_err() {
-                                self.set_warning(format!("Can't open '{}'", parent.display()));
-                            } else {
-                                let parent = parent.to_path_buf();
-                                self.browse_entries = list_dir(&parent);
-                                self.browse_dir = Some(parent.clone());
-                                self.last_browse_dir = Some(parent);
-                                self.browse_cursor = 0;
-                            }
+                    if entry.is_parent {
+                        self.browse_parent();
+                    } else {
+                        self.add_paths_internal(&[entry.path])?;
+                        if let Some(dir) = self.browse_dir.clone() {
+                            self.last_browse_dir = Some(dir);
                         }
-                        None => {
-                            let drives = drive_list();
-                            if !drives.is_empty() {
-                                self.browse_entries = drives;
-                                self.browse_dir = None;
-                                self.browse_cursor = 0;
-                            }
-                        }
+                        self.input_mode = "normal".into();
                     }
                 }
             }
+            Command::BrowseParent => self.browse_parent(),
             Command::BrowseCancel => {
                 if let Some(dir) = self.browse_dir.clone() {
                     self.last_browse_dir = Some(dir);
@@ -1059,7 +1043,7 @@ impl AppRuntime {
         self.browse_dir = Some(dir.clone());
         self.last_browse_dir = Some(dir.clone());
         match list_dir_checked(&dir) {
-            Ok(entries) => self.browse_entries = entries,
+            Ok(entries) => self.browse_entries = with_parent_entry(&dir, entries),
             Err(e) => {
                 self.browse_entries.clear();
                 self.set_warning(format!("Cannot read {}: {e}", dir.display()));
@@ -1110,6 +1094,32 @@ impl AppRuntime {
         }
     }
 
+    fn browse_parent(&mut self) {
+        if let Some(dir) = self.browse_dir.clone() {
+            match dir.parent() {
+                Some(parent) => {
+                    if std::fs::read_dir(parent).is_err() {
+                        self.set_warning(format!("Can't open '{}'", parent.display()));
+                    } else {
+                        let parent = parent.to_path_buf();
+                        self.browse_entries = browse_entries(&parent);
+                        self.browse_dir = Some(parent.clone());
+                        self.last_browse_dir = Some(parent);
+                        self.browse_cursor = 0;
+                    }
+                }
+                None => {
+                    let drives = drive_list();
+                    if !drives.is_empty() {
+                        self.browse_entries = drives;
+                        self.browse_dir = None;
+                        self.browse_cursor = 0;
+                    }
+                }
+            }
+        }
+    }
+
     async fn editor_add_highlighted(&mut self, insert: bool) -> Result<(), ControlError> {
         if self.editor_focus != EditorFocus::Files {
             return Ok(());
@@ -1117,6 +1127,10 @@ impl AppRuntime {
         let Some(entry) = self.browse_entries.get(self.browse_cursor).cloned() else {
             return Ok(());
         };
+        if entry.is_parent {
+            self.editor_parent();
+            return Ok(());
+        }
         let draft_count = self.editor_draft_count().unwrap_or(0);
         let insert_at = if insert {
             self.editor_playlist_cursor.min(draft_count)
@@ -1612,6 +1626,32 @@ pub struct FsEntry {
     pub name: String,
     pub path: PathBuf,
     pub is_dir: bool,
+    /// Synthetic entry that activates the browser's parent-directory action.
+    pub is_parent: bool,
+}
+
+fn parent_entry(dir: &Path) -> FsEntry {
+    FsEntry {
+        name: "..".into(),
+        path: dir.to_path_buf(),
+        is_dir: true,
+        is_parent: true,
+    }
+}
+
+fn with_parent_entry(dir: &Path, entries: Vec<FsEntry>) -> Vec<FsEntry> {
+    let mut out = Vec::with_capacity(entries.len() + 1);
+    // A Windows drive root can still go "up" to the synthetic drive list.
+    // Other platforms should not advertise an action at their filesystem root.
+    if dir.parent().is_some() || cfg!(windows) {
+        out.push(parent_entry(dir));
+    }
+    out.extend(entries);
+    out
+}
+
+fn browse_entries(dir: &Path) -> Vec<FsEntry> {
+    with_parent_entry(dir, list_dir(dir))
 }
 
 /// List `dir`'s contents for the folder-browser modal: every subdirectory,
@@ -1634,12 +1674,14 @@ pub fn list_dir(dir: &Path) -> Vec<FsEntry> {
                 name,
                 path,
                 is_dir: true,
+                is_parent: false,
             });
         } else if path.is_file() && is_media_extension(&path) {
             files.push(FsEntry {
                 name,
                 path,
                 is_dir: false,
+                is_parent: false,
             });
         }
     }
@@ -1669,12 +1711,14 @@ fn list_dir_checked(dir: &Path) -> Result<Vec<FsEntry>, String> {
                     name,
                     path,
                     is_dir: true,
+                    is_parent: false,
                 });
             } else if path.is_file() && is_media_extension(&path) {
                 files.push(FsEntry {
                     name,
                     path,
                     is_dir: false,
+                    is_parent: false,
                 });
             }
         }
@@ -1706,6 +1750,7 @@ pub fn drive_list() -> Vec<FsEntry> {
                 name: root,
                 path,
                 is_dir: true,
+                is_parent: false,
             });
         }
     }
@@ -2090,7 +2135,11 @@ mod tests {
         runtime.handle(Command::EditorOpen).await.unwrap();
         assert_eq!(runtime.editor_draft_count().unwrap(), 1);
         runtime.editor_focus = EditorFocus::Files;
-        runtime.browse_cursor = 0;
+        runtime.browse_cursor = runtime
+            .browse_entries
+            .iter()
+            .position(|entry| entry.name == "song.mp3")
+            .unwrap();
         runtime.handle(Command::EditorAppend).await.unwrap();
         runtime.handle(Command::EditorCancel).await.unwrap();
         assert_eq!(runtime.store.count(runtime.playlist_id).unwrap(), 1);
@@ -2118,7 +2167,11 @@ mod tests {
         runtime.last_browse_dir = Some(dir.clone());
         runtime.handle(Command::EditorOpen).await.unwrap();
         runtime.editor_focus = EditorFocus::Files;
-        runtime.browse_cursor = 0;
+        runtime.browse_cursor = runtime
+            .browse_entries
+            .iter()
+            .position(|entry| entry.path == song)
+            .unwrap();
         runtime.handle(Command::EditorAppend).await.unwrap();
         assert_eq!(runtime.editor_draft_count().unwrap(), 1);
         runtime.handle(Command::EditorApply).await.unwrap();
@@ -2337,7 +2390,9 @@ mod tests {
         std::fs::write(sub.join("song.mp3"), b"").unwrap();
         runtime.last_browse_dir = Some(root.clone());
         runtime.handle(Command::RequestAddFolder).await.unwrap();
-        assert_eq!(runtime.browse_cursor, 0); // "Album" sorts as the only entry
+        assert_eq!(runtime.browse_entries[0].name, "..");
+        runtime.handle(Command::BrowseDown).await.unwrap();
+        assert_eq!(runtime.browse_cursor, 1); // "Album" follows the parent entry
 
         runtime.handle(Command::BrowseEnter).await.unwrap();
 
@@ -2361,6 +2416,8 @@ mod tests {
         runtime.last_browse_dir = Some(dir.clone());
         runtime.handle(Command::RequestAddFolder).await.unwrap();
 
+        runtime.handle(Command::BrowseDown).await.unwrap();
+
         runtime.handle(Command::BrowseEnter).await.unwrap();
 
         assert_eq!(runtime.input_mode, "normal");
@@ -2380,7 +2437,8 @@ mod tests {
         std::fs::write(sub.join("two.mp3"), b"").unwrap();
         runtime.last_browse_dir = Some(root.clone());
         runtime.handle(Command::RequestAddFolder).await.unwrap();
-        assert_eq!(runtime.browse_cursor, 0); // cursor is on "Album"
+        runtime.handle(Command::BrowseDown).await.unwrap();
+        assert_eq!(runtime.browse_cursor, 1); // cursor is on "Album"
 
         runtime.handle(Command::BrowseSelect).await.unwrap();
 
@@ -2404,6 +2462,29 @@ mod tests {
         runtime.handle(Command::BrowseParent).await.unwrap();
 
         assert_eq!(runtime.browse_dir, Some(root.clone()));
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
+    }
+
+    #[tokio::test]
+    async fn activating_parent_entry_goes_up_one_level() {
+        let mut runtime = test_runtime("browse_parent_entry").await;
+        let root = temp_dir("browse_parent_entry_root");
+        let sub = root.join("Album");
+        std::fs::create_dir_all(&sub).unwrap();
+        runtime.last_browse_dir = Some(sub.clone());
+        runtime.handle(Command::RequestAddFolder).await.unwrap();
+
+        let entry = &runtime.browse_entries[0];
+        assert_eq!(entry.name, "..");
+        assert!(entry.is_parent);
+        assert_eq!(runtime.browse_cursor, 0);
+
+        runtime.handle(Command::BrowseEnter).await.unwrap();
+
+        assert_eq!(runtime.browse_dir, Some(root.clone()));
+        assert_eq!(runtime.input_mode, "browse");
 
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
@@ -2471,7 +2552,8 @@ mod tests {
 
         runtime.handle(Command::BrowseDown).await.unwrap();
         runtime.handle(Command::BrowseDown).await.unwrap();
-        assert_eq!(runtime.browse_cursor, 1, "cannot go past the last entry");
+        runtime.handle(Command::BrowseDown).await.unwrap();
+        assert_eq!(runtime.browse_cursor, 2, "cannot go past the last entry");
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
