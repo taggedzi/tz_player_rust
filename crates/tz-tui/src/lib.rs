@@ -211,6 +211,9 @@ async fn ui_loop(
                 if runtime.input_mode == "help" {
                     draw_help_overlay(f, f.area());
                 }
+                if runtime.input_mode == "info" {
+                    draw_info_overlay(f, f.area());
+                }
                 if runtime.input_mode == "browse" {
                     draw_browse_overlay(f, f.area(), runtime, &mut browse_scroll_offset);
                 }
@@ -956,6 +959,8 @@ fn draw_footer(
         "Browse: Enter=open/add file  a/Space=add folder  Backspace=up  Esc=cancel".into()
     } else if input_mode == "help" {
         "Esc / q / any key — close help".into()
+    } else if input_mode == "info" {
+        "Esc / q / any key — close info".into()
     } else {
         "↑/↓ Space n/p x ←/→ -/+ [] r/s f o a d c m z i g  Z=hide-viz  ?=help  q quit".into()
     };
@@ -1118,6 +1123,40 @@ fn draw_help_overlay(f: &mut ratatui::Frame<'_>, area: Rect) {
             .border_style(Style::default().fg(Color::Yellow)),
     );
     f.render_widget(p, popup);
+}
+
+/// Product and build information opened by `i`.
+///
+/// This intentionally has its own modal state instead of using the ordinary
+/// informational status channel: the footer suppresses routine info chatter,
+/// which previously made the About action completely invisible.
+fn draw_info_overlay(f: &mut ratatui::Frame<'_>, area: Rect) {
+    let info = tz_core::about_info();
+    let mut lines = info
+        .to_string()
+        .lines()
+        .map(|line| Line::from(line.to_owned()))
+        .collect::<Vec<_>>();
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Esc / q / any key - close",
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::ITALIC),
+    )));
+
+    let content_width = lines.iter().map(Line::width).max().unwrap_or(32) as u16;
+    let popup = centered_fixed_rect(content_width + 4, lines.len() as u16 + 2, area);
+    f.render_widget(Clear, popup);
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" About ")
+                .border_style(Style::default().fg(Color::Yellow)),
+        ),
+        popup,
+    );
 }
 
 fn draw_editor_screen(f: &mut ratatui::Frame<'_>, area: Rect, runtime: &AppRuntime) {
@@ -1491,6 +1530,13 @@ async fn handle_key(
         return Ok(false);
     }
 
+    // About/info overlay (any key dismisses it).
+    if runtime.input_mode == "info" {
+        runtime.input_mode = "normal".into();
+        runtime.clear_status();
+        return Ok(false);
+    }
+
     // Folder-browser modal
     if runtime.input_mode == "browse" {
         match code {
@@ -1576,7 +1622,8 @@ async fn handle_key(
             runtime.set_status(format!("Visualizer: {} ({id})", viz.active_name()));
         }
         KeyCode::Char('i') => {
-            runtime.set_status(tz_core::about_info().tui_line());
+            runtime.input_mode = "info".into();
+            runtime.clear_status();
         }
         KeyCode::Char('g') => {
             let _ = runtime.handle(Command::LocatePlaying).await;
@@ -1905,6 +1952,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn info_overlay_renders_product_and_build_details() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw_info_overlay(f, f.area())).unwrap();
+        let text = buffer_text(&terminal.backend().buffer().clone());
+        let info = tz_core::about_info();
+
+        for needle in [
+            "About",
+            info.name,
+            info.version,
+            info.description,
+            "Repository:",
+            "License:",
+            "Schema:",
+            "Target:",
+            "Esc / q / any key - close",
+        ] {
+            assert!(
+                text.contains(needle),
+                "expected info overlay to contain {needle:?}, got:\n{text}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn browse_overlay_shows_current_dir_and_highlights_cursor_entry() {
         let mut runtime = bare_test_runtime("browse_render").await;
@@ -2132,6 +2205,34 @@ mod tests {
         tz_core::open_runtime(paths, Some(tz_playback::BackendKind::Fake))
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn i_opens_the_info_overlay_and_a_key_closes_it() {
+        let mut runtime = bare_test_runtime("info_overlay_key").await;
+        let mut viz = VisualizerHost::new(false);
+
+        handle_key(
+            &mut runtime,
+            &mut viz,
+            KeyCode::Char('i'),
+            KeyModifiers::NONE,
+        )
+        .await
+        .unwrap();
+        assert_eq!(runtime.input_mode, "info");
+
+        handle_key(
+            &mut runtime,
+            &mut viz,
+            KeyCode::Char('x'),
+            KeyModifiers::NONE,
+        )
+        .await
+        .unwrap();
+        assert_eq!(runtime.input_mode, "normal");
+
+        let _ = std::fs::remove_dir_all(&runtime.paths.data_dir);
     }
 
     async fn find_test_runtime(name: &str) -> AppRuntime {
