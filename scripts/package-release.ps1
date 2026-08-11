@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string] $Target = '',
-    [switch] $SkipBuild
+    [switch] $SkipBuild,
+    [switch] $SkipLicenseCheck
 )
 
 $ErrorActionPreference = 'Stop'
@@ -53,7 +54,9 @@ function Write-Sha256File {
 $originalRustFlags = [Environment]::GetEnvironmentVariable('RUSTFLAGS', 'Process')
 Push-Location $repoRoot
 try {
-    & (Join-Path $PSScriptRoot 'check-distribution-licenses.ps1')
+    if (-not $SkipLicenseCheck) {
+        & (Join-Path $PSScriptRoot 'check-distribution-licenses.ps1')
+    }
 
     $hasExplicitTarget = -not [string]::IsNullOrWhiteSpace($Target)
     if (-not $hasExplicitTarget) {

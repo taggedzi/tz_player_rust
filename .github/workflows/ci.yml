@@ -12,6 +12,10 @@ on:
         default: false
         type: boolean
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
@@ -36,6 +40,8 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-on-failure: true
 
       - name: Install dependency policy tools
         run: |
@@ -73,6 +79,8 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-on-failure: true
 
       - name: Install Linux audio build dependencies
         if: runner.os == 'Linux'
@@ -94,7 +102,10 @@ jobs:
 
   native-package:
     name: Native package (${{ matrix.label }})
-    needs: [dependency-policy, check]
+    # The dependency-policy job is the single source of truth for dependency
+    # and distribution-license validation. Native packaging can overlap with
+    # the platform check matrix once that policy gate has passed.
+    needs: dependency-policy
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -118,38 +129,58 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Preserve dependency artifacts even when a later packaging smoke
+          # test fails, so the next push does not rebuild from scratch.
+          cache-on-failure: true
 
       - name: Cache audited FFmpeg build
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: ffmpeg-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: native/ffmpeg/build
-          key: ffmpeg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native/ffmpeg/manifest.toml') }}
+          key: ffmpeg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native/ffmpeg/manifest.toml', 'native/ffmpeg/build.ps1', 'native/ffmpeg/build.sh', 'native/ffmpeg/patches/**') }}
 
       - name: Install Windows native build tools
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && steps.ffmpeg-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           choco install nasm --yes --no-progress
           C:\msys64\usr\bin\bash.exe -lc "pacman -Sy --noconfirm --needed make diffutils"
 
-      - name: Install Linux native build tools
+      - name: Install Linux audio build dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes libasound2-dev libclang-dev nasm pkg-config
+          sudo apt-get install --yes libasound2-dev libclang-dev pkg-config
+
+      - name: Install Linux FFmpeg build tools
+        if: runner.os == 'Linux' && steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: sudo apt-get install --yes nasm
 
       - name: Install macOS native build tools
         if: runner.os == 'macOS'
-        run: brew install nasm pkg-config
+        run: brew install pkg-config
+
+      - name: Install macOS FFmpeg build tools
+        if: runner.os == 'macOS' && steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: brew install nasm
 
       - name: Build audited FFmpeg SDK (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && steps.ffmpeg-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: ./native/ffmpeg/build.ps1
 
       - name: Build audited FFmpeg SDK (Unix)
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && steps.ffmpeg-cache.outputs.cache-hit != 'true'
         run: bash ./native/ffmpeg/build.sh
+
+      - name: Save audited FFmpeg build cache
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: native/ffmpeg/build
+          key: ffmpeg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native/ffmpeg/manifest.toml', 'native/ffmpeg/build.ps1', 'native/ffmpeg/build.sh', 'native/ffmpeg/patches/**') }}
 
       - name: Export audited SDK paths
         shell: pwsh
@@ -198,16 +229,9 @@ jobs:
       - name: Lint exact native helper
         run: cargo clippy -p tz-audio-decoder --features ffmpeg-native --all-targets --locked -- -D warnings
 
-      - name: Install release notice generator
-        env:
-          RUSTFLAGS: ''
-        run: |
-          cargo install cargo-deny --version 0.20.2 --locked
-          cargo install cargo-about --version 0.9.1 --locked --features cli
-
       - name: Build audited release archive
         shell: pwsh
-        run: ./scripts/package-release.ps1
+        run: ./scripts/package-release.ps1 -SkipLicenseCheck
 
       - name: Smoke extracted archive with no system media tools
         shell: pwsh
