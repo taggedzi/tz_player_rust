@@ -75,8 +75,27 @@ try {
             Assert-ExitCode -Expected 0 -Action "chmod $name"
         }
     }
-    $originalPath = $env:PATH
-    $env:PATH = $fakePath + [IO.Path]::PathSeparator + $env:PATH
+    # Package validation must not inherit build SDK paths or helper overrides.
+    # Otherwise a removed staged library can be silently loaded from the SDK.
+    $originalRuntimeEnvironment = @{
+        PATH = [Environment]::GetEnvironmentVariable('PATH', 'Process')
+        LD_LIBRARY_PATH = [Environment]::GetEnvironmentVariable('LD_LIBRARY_PATH', 'Process')
+        LD_PRELOAD = [Environment]::GetEnvironmentVariable('LD_PRELOAD', 'Process')
+        DYLD_LIBRARY_PATH = [Environment]::GetEnvironmentVariable('DYLD_LIBRARY_PATH', 'Process')
+        DYLD_FALLBACK_LIBRARY_PATH = [Environment]::GetEnvironmentVariable('DYLD_FALLBACK_LIBRARY_PATH', 'Process')
+        DYLD_INSERT_LIBRARIES = [Environment]::GetEnvironmentVariable('DYLD_INSERT_LIBRARIES', 'Process')
+        TZ_PLAYER_AUDIO_HELPER = [Environment]::GetEnvironmentVariable('TZ_PLAYER_AUDIO_HELPER', 'Process')
+        TZ_FFMPEG_PREFIX = [Environment]::GetEnvironmentVariable('TZ_FFMPEG_PREFIX', 'Process')
+        TZ_FFMPEG_INCLUDE_DIR = [Environment]::GetEnvironmentVariable('TZ_FFMPEG_INCLUDE_DIR', 'Process')
+        TZ_FFMPEG_LIB_DIR = [Environment]::GetEnvironmentVariable('TZ_FFMPEG_LIB_DIR', 'Process')
+        TZ_FFMPEG_RUNTIME_DIR = [Environment]::GetEnvironmentVariable('TZ_FFMPEG_RUNTIME_DIR', 'Process')
+        FFMPEG_DIR = [Environment]::GetEnvironmentVariable('FFMPEG_DIR', 'Process')
+        PKG_CONFIG_PATH = [Environment]::GetEnvironmentVariable('PKG_CONFIG_PATH', 'Process')
+    }
+    $env:PATH = $fakePath
+    foreach ($name in $originalRuntimeEnvironment.Keys | Where-Object { $_ -ne 'PATH' }) {
+        [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+    }
     try {
         $capabilities = (& $helper capabilities --json 2>&1 | Out-String)
         if ($LASTEXITCODE -ne 0) { throw "Staged helper capability check failed:`n$capabilities" }
@@ -165,7 +184,9 @@ try {
         [void](Invoke-Doctor -Player $player)
     }
     finally {
-        $env:PATH = $originalPath
+        foreach ($name in $originalRuntimeEnvironment.Keys) {
+            [Environment]::SetEnvironmentVariable($name, $originalRuntimeEnvironment[$name], 'Process')
+        }
     }
 
     Write-Host "Staged package smoke passed: $archivePath"
