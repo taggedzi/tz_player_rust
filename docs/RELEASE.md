@@ -1,5 +1,11 @@
 # Release checklist (tz-player Rust)
 
+> **Release-process roadmap item:** The checklist below documents the current
+> multi-command implementation. The next release-engineering goal is to wrap
+> these gates in one clearly named script/workflow action that builds and
+> smoke-tests the supported target set without manual intermediate steps. See
+> the matching major goal in [`TODO.md`](TODO.md).
+
 ## Preconditions
 
 - [ ] Tree contains only intentional release changes.

@@ -112,6 +112,22 @@ All four done.
 - [x] Visualizer pane collapse/maximize — there was no existing "disabled visualizer" state to key off (`z` only cycled the 26 built-in plugins, no off/none stop), so this needed a decision: added a dedicated `Shift+Z` toggle (`crates/tz-tui/src/lib.rs`) rather than folding an off-state into the `z` cycle. Hiding gives the playlist the full width (`main_layout(area, visualizer_hidden) -> (Rect, Option<Rect>)`, shared by both the pre-render sizing pass and the actual draw pass — replaces the old duplicated `Layout::split` calls, which is also a correctness fix since a hidden pane now can't index out of bounds by construction). While hidden the visualizer host itself isn't torn down but its `render()` isn't called either (frozen, not ticking, to avoid animating something invisible) — showing it again resumes instantly rather than reinitializing. State is session-only (`AppRuntime::visualizer_hidden`, not written to `AppState`); if that turns out to be wanted across restarts, that's Tier 4 config territory. TDD'd `main_layout` as a pure function plus the `Shift+Z`/`z` key dispatch via `handle_key`. Documented in the help modal and `README.md`/`docs/usage.md`/`docs/PROGRESS.md`.
 
 ## Tier 3 — Larger feature work
+- [ ] **Major goal: create a single-stage release builder for every supported
+  platform.** Replace the current sequence of prerequisite, SDK, package, and
+  smoke-test commands with one documented maintainer action, backed by one
+  reusable script/workflow. Given a version (and, when useful, an explicit
+  target selection), it must run the release gates, validate or clearly report
+  missing build prerequisites, build the pinned native FFmpeg SDK plus the
+  player/helper, create the complete licensed package and checksums, run the
+  staged-package smoke test, and leave only predictable publish-ready artifacts
+  and a short build summary in `target/dist`. The normal release action should
+  produce the supported target set—Windows x86-64, Linux x86-64, and macOS
+  ARM64 when that target is enabled—without the maintainer manually invoking
+  multiple scripts, setting environment variables, or selecting intermediate
+  paths. Keep a current-host/local mode for fast iteration, but do not allow it
+  to bypass the same packaging, licensing, and smoke-test gates. Update
+  `docs/RELEASE.md`, CI, and release notes so the final process is a single
+  copy/paste command or one clearly named workflow action.
 - [ ] **Next major goal: broaden playback compatibility with FFmpeg-backed PCM
   streaming.** Route files rejected by the native decoder through the packaged
   FFmpeg helper, stream normalized PCM to playback and visualizers, and keep
