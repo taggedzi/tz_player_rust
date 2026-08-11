@@ -199,12 +199,12 @@ jobs:
       - name: Smoke extracted archive with no system media tools
         shell: pwsh
         run: |
-          $host = (rustc -vV | Where-Object { $_ -like 'host: *' }).Substring('host: '.Length)
+          $rustHost = (rustc -vV | Where-Object { $_ -like 'host: *' }).Substring('host: '.Length)
           $suffix = if ($IsWindows) { '.zip' } else { '.tar.gz' }
           $archive = @(Get-ChildItem -LiteralPath target/dist -File | Where-Object {
-            $_.Name -like "tz-player-*-$host$suffix"
+            $_.Name -like "tz-player-*-$rustHost$suffix"
           })
-          if ($archive.Count -ne 1) { throw "Expected one package archive for $host; found $($archive.Count)." }
+          if ($archive.Count -ne 1) { throw "Expected one package archive for $rustHost; found $($archive.Count)." }
           ./scripts/test-staged-package.ps1 -Archive $archive[0].FullName
 
       - name: Upload tested release and matching source
