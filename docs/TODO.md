@@ -127,7 +127,8 @@ All four done.
   paths. Keep a current-host/local mode for fast iteration, but do not allow it
   to bypass the same packaging, licensing, and smoke-test gates. Update
   `docs/RELEASE.md`, CI, and release notes so the final process is a single
-  copy/paste command or one clearly named workflow action.
+  copy/paste command or one clearly named workflow action. Implementation plan:
+  [`single-stage release builder`](superpowers/plans/2026-08-11-single-stage-release-builder.md).
 - [ ] **Next major goal: broaden playback compatibility with FFmpeg-backed PCM
   streaming.** Route files rejected by the native decoder through the packaged
   FFmpeg helper, stream normalized PCM to playback and visualizers, and keep
